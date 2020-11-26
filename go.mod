@@ -10,6 +10,7 @@ require (
 	github.com/alexedwards/argon2id v0.0.0-20200802152012-2464efd3196b
 	github.com/aws/aws-sdk-go v1.35.30
 	github.com/coreos/go-systemd v0.0.0-20191104093116-d3cd4ed1dbcf // indirect
+	github.com/denisenkom/go-mssqldb v0.9.0
 	github.com/eikenb/pipeat v0.0.0-20200430215831-470df5986b6d
 	github.com/fclairamb/ftpserverlib v0.9.1-0.20201105003045-1edd6bf7ae53
 	github.com/fsnotify/fsnotify v1.4.9 // indirect

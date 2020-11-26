@@ -55,6 +55,8 @@ const (
 	PGSQLDataProviderName = "postgresql"
 	// MySQLDataProviderName name for MySQL database provider
 	MySQLDataProviderName = "mysql"
+	// MSSQLDataProviderName name for Microsoft SQL Server database provider
+	MSSQLDataProviderName = "mssql"
 	// BoltDataProviderName name for bbolt key/value store provider
 	BoltDataProviderName = "bolt"
 	// MemoryDataProviderName name for memory provider
@@ -89,7 +91,7 @@ const (
 var (
 	// SupportedProviders defines the supported data providers
 	SupportedProviders = []string{SQLiteDataProviderName, PGSQLDataProviderName, MySQLDataProviderName,
-		BoltDataProviderName, MemoryDataProviderName}
+		MSSQLDataProviderName, BoltDataProviderName, MemoryDataProviderName}
 	// ValidPerms defines all the valid permissions for a user
 	ValidPerms = []string{PermAny, PermListItems, PermDownload, PermUpload, PermOverwrite, PermRename, PermDelete,
 		PermCreateDirs, PermCreateSymlinks, PermChmod, PermChown, PermChtimes}
@@ -761,6 +763,8 @@ func createProvider(basePath string) error {
 		err = initializePGSQLProvider()
 	} else if config.Driver == MySQLDataProviderName {
 		err = initializeMySQLProvider()
+	} else if config.Driver == MSSQLDataProviderName {
+		err = initializeMSSQLProvider()
 	} else if config.Driver == BoltDataProviderName {
 		err = initializeBoltProvider(basePath)
 	} else if config.Driver == MemoryDataProviderName {

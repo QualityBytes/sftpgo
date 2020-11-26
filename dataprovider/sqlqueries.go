@@ -17,7 +17,9 @@ const (
 func getSQLPlaceholders() []string {
 	var placeholders []string
 	for i := 1; i <= 20; i++ {
-		if config.Driver == PGSQLDataProviderName {
+		if config.Driver == MSSQLDataProviderName {
+			placeholders = append(placeholders, fmt.Sprintf("@p%v", i))
+		} else if config.Driver == PGSQLDataProviderName {
 			placeholders = append(placeholders, fmt.Sprintf("$%v", i))
 		} else {
 			placeholders = append(placeholders, "?")
@@ -35,6 +37,22 @@ func getUserByIDQuery() string {
 }
 
 func getUsersQuery(order string, username string) string {
+	if config.Driver == MSSQLDataProviderName {
+		return mssqlGetUsersQuery(order, username)
+	}
+	return commonGetUsersQuery(order, username)
+}
+
+func mssqlGetUsersQuery(order string, username string) string {
+	if len(username) > 0 {
+		return fmt.Sprintf(`SELECT %v FROM %v WHERE [username] = %v ORDER BY [username] %v OFFSET %v ROWS FETCH NEXT %v ROWS ONLY`,
+			selectUserFields, sqlTableUsers, sqlPlaceholders[0], order, sqlPlaceholders[2], sqlPlaceholders[1])
+	}
+	return fmt.Sprintf(`SELECT %v FROM %v ORDER BY [username] %v OFFSET %v ROWS FETCH NEXT %v ROWS ONLY`, selectUserFields, sqlTableUsers,
+		order, sqlPlaceholders[1], sqlPlaceholders[0])
+}
+
+func commonGetUsersQuery(order string, username string) string {
 	if len(username) > 0 {
 		return fmt.Sprintf(`SELECT %v FROM %v WHERE username = %v ORDER BY username %v LIMIT %v OFFSET %v`,
 			selectUserFields, sqlTableUsers, sqlPlaceholders[0], order, sqlPlaceholders[1], sqlPlaceholders[2])
@@ -116,6 +134,22 @@ func getAddFolderMappingQuery() string {
 }
 
 func getFoldersQuery(order, folderPath string) string {
+	if config.Driver == MSSQLDataProviderName {
+		return mssqlGetFoldersQuery(order, folderPath)
+	}
+	return commonGetFoldersQuery(order, folderPath)
+}
+
+func mssqlGetFoldersQuery(order, folderPath string) string {
+	if len(folderPath) > 0 {
+		return fmt.Sprintf(`SELECT %v FROM %v WHERE [path] = %v ORDER BY [path] %v OFFSET %v ROWS FETCH NEXT %v ROWS ONLY`,
+			selectFolderFields, sqlTableFolders, sqlPlaceholders[0], order, sqlPlaceholders[2], sqlPlaceholders[1])
+	}
+	return fmt.Sprintf(`SELECT %v FROM %v ORDER BY [path] %v OFFSET %v ROWS FETCH NEXT %v ROWS ONLY`, selectFolderFields, sqlTableFolders,
+		order, sqlPlaceholders[1], sqlPlaceholders[0])
+}
+
+func commonGetFoldersQuery(order, folderPath string) string {
 	if len(folderPath) > 0 {
 		return fmt.Sprintf(`SELECT %v FROM %v WHERE path = %v ORDER BY path %v LIMIT %v OFFSET %v`,
 			selectFolderFields, sqlTableFolders, sqlPlaceholders[0], order, sqlPlaceholders[1], sqlPlaceholders[2])
@@ -174,6 +208,9 @@ func getRelatedUsersForFoldersQuery(folders []vfs.BaseVirtualFolder) string {
 }
 
 func getDatabaseVersionQuery() string {
+	if config.Driver == MSSQLDataProviderName {
+		return fmt.Sprintf("SELECT TOP(1) [version] from [%v]", sqlTableSchemaVersion)
+	}
 	return fmt.Sprintf("SELECT version from %v LIMIT 1", sqlTableSchemaVersion)
 }
 
