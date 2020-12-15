@@ -73,12 +73,12 @@
     }
   },
   "data_provider": {
-    "driver": "sqlite",
-    "name": "sftpgo.db",
-    "host": "",
-    "port": 5432,
-    "username": "",
-    "password": "",
+    "driver": "mssql",
+    "name": "sftpgo",
+    "host": "host.docker.internal",
+    "port": 1433,
+    "username": "sa",
+    "password": "Passwort1!",
     "sslmode": 0,
     "connection_string": "",
     "sql_tables_prefix": "",

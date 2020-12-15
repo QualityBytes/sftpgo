@@ -65,7 +65,8 @@ ALTER TABLE [{{folders_mapping}}] ADD CONSTRAINT [folders_mapping_folder_id_fk_f
 ALTER TABLE [{{folders_mapping}}] ADD CONSTRAINT [folders_mapping_user_id_fk_users_id] FOREIGN KEY ([user_id]) REFERENCES [{{users}}] ([id]) ON DELETE CASCADE ON UPDATE NO ACTION;
 CREATE INDEX [folders_mapping_folder_id_idx] ON [{{folders_mapping}}] ([folder_id]);
 CREATE INDEX [folders_mapping_user_id_idx] ON [{{folders_mapping}}] ([user_id])`
-    mssqlV6SQL          = `ALTER TABLE [{{users}}] ADD [additional_info] [text] NULL`
+	mssqlV6SQL     = `ALTER TABLE [{{users}}] ADD [additional_info] [text] NULL`
+	mssqlV6DownSQL = `ALTER TABLE [{{users}}] DROP COLUMN [additional_info]`
 )
 
 // MSSQLProvider auth provider for Microsoft SQL Server database
@@ -251,6 +252,28 @@ func (p MSSQLProvider) migrateDatabase() error {
 	}
 }
 
+func (p MSSQLProvider) revertDatabase(targetVersion int) error {
+	dbVersion, err := sqlCommonGetDatabaseVersion(p.dbHandle, true)
+	if err != nil {
+		return err
+	}
+	if dbVersion.Version == targetVersion {
+		return fmt.Errorf("current version match target version, nothing to do")
+	}
+	switch dbVersion.Version {
+	case 6:
+		err = downgradeMSSQLDatabaseFrom6To5(p.dbHandle)
+		if err != nil {
+			return err
+		}
+		return downgradeMSSQLDatabaseFrom5To4(p.dbHandle)
+	case 5:
+		return downgradeMSSQLDatabaseFrom5To4(p.dbHandle)
+	default:
+		return fmt.Errorf("Database version not handled: %v", dbVersion.Version)
+	}
+}
+
 func updateMSSQLDatabaseFromV1(dbHandle *sql.DB) error {
 	err := updateMSSQLDatabaseFrom1To2(dbHandle)
 	if err != nil {
@@ -333,4 +356,15 @@ func mssqlGetDatabaseVersion(dbHandle *sql.DB, showInitWarn bool) (schemaVersion
 	row := stmt.QueryRowContext(ctx)
 	err = row.Scan(&result.Version)
 	return result, err
+}
+
+func downgradeMSSQLDatabaseFrom6To5(dbHandle *sql.DB) error {
+	logger.InfoToConsole("downgrading database version: 6 -> 5")
+	providerLog(logger.LevelInfo, "downgrading database version: 6 -> 5")
+	sql := strings.Replace(mssqlV6DownSQL, "{{users}}", sqlTableUsers, 1)
+	return sqlCommonExecSQLAndUpdateDBVersion(dbHandle, []string{sql}, 5)
+}
+
+func downgradeMSSQLDatabaseFrom5To4(dbHandle *sql.DB) error {
+	return sqlCommonDowngradeDatabaseFrom5To4(dbHandle)
 }
