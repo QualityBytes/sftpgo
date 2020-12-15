@@ -65,6 +65,7 @@ ALTER TABLE [{{folders_mapping}}] ADD CONSTRAINT [folders_mapping_folder_id_fk_f
 ALTER TABLE [{{folders_mapping}}] ADD CONSTRAINT [folders_mapping_user_id_fk_users_id] FOREIGN KEY ([user_id]) REFERENCES [{{users}}] ([id]) ON DELETE CASCADE ON UPDATE NO ACTION;
 CREATE INDEX [folders_mapping_folder_id_idx] ON [{{folders_mapping}}] ([folder_id]);
 CREATE INDEX [folders_mapping_user_id_idx] ON [{{folders_mapping}}] ([user_id])`
+    mssqlV6SQL          = `ALTER TABLE [{{users}}] ADD [additional_info] [text] NULL`
 )
 
 // MSSQLProvider auth provider for Microsoft SQL Server database
@@ -243,6 +244,8 @@ func (p MSSQLProvider) migrateDatabase() error {
 		return updateMSSQLDatabaseFromV3(p.dbHandle)
 	case 4:
 		return updateMSSQLDatabaseFromV4(p.dbHandle)
+	case 5:
+		return updateMSSQLDatabaseFromV5(p.dbHandle)
 	default:
 		return fmt.Errorf("Database version not handled: %v", dbVersion.Version)
 	}
@@ -273,7 +276,15 @@ func updateMSSQLDatabaseFromV3(dbHandle *sql.DB) error {
 }
 
 func updateMSSQLDatabaseFromV4(dbHandle *sql.DB) error {
-	return updateMSSQLDatabaseFrom4To5(dbHandle)
+	err := updateMSSQLDatabaseFrom4To5(dbHandle)
+	if err != nil {
+		return err
+	}
+	return updateMSSQLDatabaseFromV5(dbHandle)
+}
+
+func updateMSSQLDatabaseFromV5(dbHandle *sql.DB) error {
+	return updateMSSQLDatabaseFrom5To6(dbHandle)
 }
 
 func updateMSSQLDatabaseFrom1To2(dbHandle *sql.DB) error {
@@ -296,6 +307,13 @@ func updateMSSQLDatabaseFrom3To4(dbHandle *sql.DB) error {
 
 func updateMSSQLDatabaseFrom4To5(dbHandle *sql.DB) error {
 	return sqlCommonUpdateDatabaseFrom4To5(dbHandle)
+}
+
+func updateMSSQLDatabaseFrom5To6(dbHandle *sql.DB) error {
+	logger.InfoToConsole("updating database version: 5 -> 6")
+	providerLog(logger.LevelInfo, "updating database version: 5 -> 6")
+	sql := strings.Replace(mssqlV6SQL, "{{users}}", sqlTableUsers, 1)
+	return sqlCommonExecSQLAndUpdateDBVersion(dbHandle, []string{sql}, 6)
 }
 
 func mssqlGetDatabaseVersion(dbHandle *sql.DB, showInitWarn bool) (schemaVersion, error) {
