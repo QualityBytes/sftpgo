@@ -41,7 +41,7 @@ type MemoryProvider struct {
 	dbHandle *memoryProviderHandle
 }
 
-func initializeMemoryProvider(basePath string) error {
+func initializeMemoryProvider(basePath string) {
 	logSender = fmt.Sprintf("dataprovider_%v", MemoryDataProviderName)
 	configFile := ""
 	if utils.IsFileInputValid(config.Name) {
@@ -61,7 +61,10 @@ func initializeMemoryProvider(basePath string) error {
 			configFile:    configFile,
 		},
 	}
-	return provider.reloadConfig()
+	if err := provider.reloadConfig(); err != nil {
+		logger.Error(logSender, "", "unable to load initial data: %v", err)
+		logger.ErrorToConsole("unable to load initial data: %v", err)
+	}
 }
 
 func (p MemoryProvider) checkAvailability() error {
@@ -601,7 +604,7 @@ func (p MemoryProvider) clear() {
 }
 
 func (p MemoryProvider) reloadConfig() error {
-	if len(p.dbHandle.configFile) == 0 {
+	if p.dbHandle.configFile == "" {
 		providerLog(logger.LevelDebug, "no users configuration file defined")
 		return nil
 	}

@@ -2,6 +2,7 @@
 package service
 
 import (
+	"errors"
 	"fmt"
 	"io/ioutil"
 	"os"
@@ -73,6 +74,12 @@ func (s *Service) Start() error {
 			logger.Error(logSender, "", "error loading configuration: %v", err)
 		}
 	}
+	if !config.HasServicesToStart() {
+		infoString := "No service configured, nothing to do"
+		logger.Info(logSender, "", infoString)
+		logger.InfoToConsole(infoString)
+		return errors.New(infoString)
+	}
 
 	common.Initialize(config.GetCommonConfig())
 
@@ -98,7 +105,6 @@ func (s *Service) Start() error {
 	if err != nil {
 		logger.Error(logSender, "", "unable to load initial data: %v", err)
 		logger.ErrorToConsole("unable to load initial data: %v", err)
-		return err
 	}
 
 	httpConfig := config.GetHTTPConfig()
@@ -115,15 +121,19 @@ func (s *Service) startServices() {
 	httpdConf := config.GetHTTPDConfig()
 	webDavDConf := config.GetWebDAVDConfig()
 
-	go func() {
-		logger.Debug(logSender, "", "initializing SFTP server with config %+v", sftpdConf)
-		if err := sftpdConf.Initialize(s.ConfigDir); err != nil {
-			logger.Error(logSender, "", "could not start SFTP server: %v", err)
-			logger.ErrorToConsole("could not start SFTP server: %v", err)
-			s.Error = err
-		}
-		s.Shutdown <- true
-	}()
+	if sftpdConf.BindPort > 0 {
+		go func() {
+			logger.Debug(logSender, "", "initializing SFTP server with config %+v", sftpdConf)
+			if err := sftpdConf.Initialize(s.ConfigDir); err != nil {
+				logger.Error(logSender, "", "could not start SFTP server: %v", err)
+				logger.ErrorToConsole("could not start SFTP server: %v", err)
+				s.Error = err
+			}
+			s.Shutdown <- true
+		}()
+	} else {
+		logger.Debug(logSender, "", "SFTP server not started, disabled in config file")
+	}
 
 	if httpdConf.BindPort > 0 {
 		go func() {
@@ -162,7 +172,7 @@ func (s *Service) startServices() {
 			s.Shutdown <- true
 		}()
 	} else {
-		logger.Debug(logSender, "", "WevDAV server not started, disabled in config file")
+		logger.Debug(logSender, "", "WebDAV server not started, disabled in config file")
 	}
 }
 

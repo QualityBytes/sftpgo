@@ -387,10 +387,13 @@ func Initialize(cnf Config, basePath string) error {
 	var err error
 	config = cnf
 
-	if err = validateHooks(); err != nil {
-		return err
+	if filepath.IsAbs(config.CredentialsPath) {
+		credentialsDirPath = config.CredentialsPath
+	} else {
+		credentialsDirPath = filepath.Join(basePath, config.CredentialsPath)
 	}
-	if err = validateCredentialsDir(basePath, cnf.PreferDatabaseCredentials); err != nil {
+
+	if err = validateHooks(); err != nil {
 		return err
 	}
 	err = createProvider(basePath)
@@ -768,7 +771,7 @@ func createProvider(basePath string) error {
 	} else if config.Driver == BoltDataProviderName {
 		err = initializeBoltProvider(basePath)
 	} else if config.Driver == MemoryDataProviderName {
-		err = initializeMemoryProvider(basePath)
+		initializeMemoryProvider(basePath)
 	} else {
 		err = fmt.Errorf("unsupported data provider: %v", config.Driver)
 	}
@@ -1096,7 +1099,12 @@ func saveGCSCredentials(user *User) error {
 	if err != nil {
 		return &ValidationError{err: fmt.Sprintf("could not marshal GCS credentials: %v", err)}
 	}
-	err = ioutil.WriteFile(user.getGCSCredentialsFilePath(), creds, 0600)
+	credentialsFilePath := user.getGCSCredentialsFilePath()
+	err = os.MkdirAll(filepath.Dir(credentialsFilePath), 0700)
+	if err != nil {
+		return &ValidationError{err: fmt.Sprintf("could not create GCS credentials dir: %v", err)}
+	}
+	err = ioutil.WriteFile(credentialsFilePath, creds, 0600)
 	if err != nil {
 		return &ValidationError{err: fmt.Sprintf("could not save GCS credentials: %v", err)}
 	}
@@ -1432,31 +1440,6 @@ func startAvailabilityTimer() {
 			}
 		}
 	}()
-}
-
-func validateCredentialsDir(basePath string, preferDbCredentials bool) error {
-	if filepath.IsAbs(config.CredentialsPath) {
-		credentialsDirPath = config.CredentialsPath
-	} else {
-		credentialsDirPath = filepath.Join(basePath, config.CredentialsPath)
-	}
-	// if we want to store credentials inside the database just stop here
-	// we just populate credentialsDirPath to be able to use existing users
-	// with credential files
-	if preferDbCredentials {
-		return nil
-	}
-	fi, err := os.Stat(credentialsDirPath)
-	if err == nil {
-		if !fi.IsDir() {
-			return errors.New("Credential path is not a valid directory")
-		}
-		return nil
-	}
-	if !os.IsNotExist(err) {
-		return err
-	}
-	return os.MkdirAll(credentialsDirPath, 0700)
 }
 
 func checkDataprovider() {
