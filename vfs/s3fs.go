@@ -31,7 +31,7 @@ import (
 type S3Fs struct {
 	connectionID   string
 	localTempDir   string
-	config         S3FsConfig
+	config         *S3FsConfig
 	svc            *s3.S3
 	ctxTimeout     time.Duration
 	ctxLongTimeout time.Duration
@@ -47,11 +47,11 @@ func NewS3Fs(connectionID, localTempDir string, config S3FsConfig) (Fs, error) {
 	fs := &S3Fs{
 		connectionID:   connectionID,
 		localTempDir:   localTempDir,
-		config:         config,
+		config:         &config,
 		ctxTimeout:     30 * time.Second,
 		ctxLongTimeout: 300 * time.Second,
 	}
-	if err := ValidateS3FsConfig(&fs.config); err != nil {
+	if err := fs.config.Validate(); err != nil {
 		return fs, err
 	}
 	awsConfig := aws.NewConfig()
@@ -60,12 +60,14 @@ func NewS3Fs(connectionID, localTempDir string, config S3FsConfig) (Fs, error) {
 		awsConfig.WithRegion(fs.config.Region)
 	}
 
-	if fs.config.AccessSecret.IsEncrypted() {
-		err := fs.config.AccessSecret.Decrypt()
-		if err != nil {
-			return fs, err
+	if !fs.config.AccessSecret.IsEmpty() {
+		if fs.config.AccessSecret.IsEncrypted() {
+			err := fs.config.AccessSecret.Decrypt()
+			if err != nil {
+				return fs, err
+			}
 		}
-		awsConfig.Credentials = credentials.NewStaticCredentials(fs.config.AccessKey, fs.config.AccessSecret.Payload, "")
+		awsConfig.Credentials = credentials.NewStaticCredentials(fs.config.AccessKey, fs.config.AccessSecret.GetPayload(), "")
 	}
 
 	if fs.config.Endpoint != "" {
@@ -540,7 +542,7 @@ func (fs *S3Fs) GetRelativePath(name string) string {
 	if rel == "." {
 		rel = ""
 	}
-	if !strings.HasPrefix(rel, "/") {
+	if !path.IsAbs(rel) {
 		return "/" + rel
 	}
 	if fs.config.KeyPrefix != "" {
@@ -694,4 +696,9 @@ func (fs *S3Fs) GetMimeType(name string) (string, error) {
 		return "", err
 	}
 	return *obj.ContentType, err
+}
+
+// Close closes the fs
+func (*S3Fs) Close() error {
+	return nil
 }

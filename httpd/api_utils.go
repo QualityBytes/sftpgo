@@ -21,6 +21,7 @@ import (
 	"github.com/drakkan/sftpgo/common"
 	"github.com/drakkan/sftpgo/dataprovider"
 	"github.com/drakkan/sftpgo/httpclient"
+	"github.com/drakkan/sftpgo/kms"
 	"github.com/drakkan/sftpgo/utils"
 	"github.com/drakkan/sftpgo/version"
 	"github.com/drakkan/sftpgo/vfs"
@@ -427,17 +428,17 @@ func GetVersion(expectedStatusCode int) (version.Info, []byte, error) {
 	return appVersion, body, err
 }
 
-// GetProviderStatus returns provider status
-func GetProviderStatus(expectedStatusCode int) (map[string]interface{}, []byte, error) {
-	var response map[string]interface{}
+// GetStatus returns the server status
+func GetStatus(expectedStatusCode int) (ServicesStatus, []byte, error) {
+	var response ServicesStatus
 	var body []byte
-	resp, err := sendHTTPRequest(http.MethodGet, buildURLRelativeToBase(providerStatusPath), nil, "")
+	resp, err := sendHTTPRequest(http.MethodGet, buildURLRelativeToBase(serverStatusPath), nil, "")
 	if err != nil {
 		return response, body, err
 	}
 	defer resp.Body.Close()
 	err = checkResponse(resp.StatusCode, expectedStatusCode)
-	if err == nil && (expectedStatusCode == http.StatusOK || expectedStatusCode == http.StatusInternalServerError) {
+	if err == nil && (expectedStatusCode == http.StatusOK) {
 		err = render.DecodeJSON(resp.Body, &response)
 	} else {
 		body, _ = getResponseBody(resp)
@@ -552,7 +553,7 @@ func checkFolder(expected *vfs.BaseVirtualFolder, actual *vfs.BaseVirtualFolder)
 }
 
 func checkUser(expected *dataprovider.User, actual *dataprovider.User) error {
-	if len(actual.Password) > 0 {
+	if actual.Password != "" {
 		return errors.New("User password must not be visible")
 	}
 	if expected.ID <= 0 {
@@ -623,6 +624,12 @@ func compareUserFsConfig(expected *dataprovider.User, actual *dataprovider.User)
 	if err := compareAzBlobConfig(expected, actual); err != nil {
 		return err
 	}
+	if err := checkEncryptedSecret(expected.FsConfig.CryptConfig.Passphrase, actual.FsConfig.CryptConfig.Passphrase); err != nil {
+		return err
+	}
+	if err := compareSFTPFsConfig(expected, actual); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -675,6 +682,35 @@ func compareGCSConfig(expected *dataprovider.User, actual *dataprovider.User) er
 	return nil
 }
 
+func compareSFTPFsConfig(expected *dataprovider.User, actual *dataprovider.User) error {
+	if expected.FsConfig.SFTPConfig.Endpoint != actual.FsConfig.SFTPConfig.Endpoint {
+		return errors.New("SFTPFs endpoint mismatch")
+	}
+	if expected.FsConfig.SFTPConfig.Username != actual.FsConfig.SFTPConfig.Username {
+		return errors.New("SFTPFs username mismatch")
+	}
+	if err := checkEncryptedSecret(expected.FsConfig.SFTPConfig.Password, actual.FsConfig.SFTPConfig.Password); err != nil {
+		return fmt.Errorf("SFTPFs password mismatch: %v", err)
+	}
+	if err := checkEncryptedSecret(expected.FsConfig.SFTPConfig.PrivateKey, actual.FsConfig.SFTPConfig.PrivateKey); err != nil {
+		return fmt.Errorf("SFTPFs private key mismatch: %v", err)
+	}
+	if expected.FsConfig.SFTPConfig.Prefix != actual.FsConfig.SFTPConfig.Prefix {
+		if expected.FsConfig.SFTPConfig.Prefix != "" && actual.FsConfig.SFTPConfig.Prefix != "/" {
+			return errors.New("SFTPFs prefix mismatch")
+		}
+	}
+	if len(expected.FsConfig.SFTPConfig.Fingerprints) != len(actual.FsConfig.SFTPConfig.Fingerprints) {
+		return errors.New("SFTPFs fingerprints mismatch")
+	}
+	for _, value := range actual.FsConfig.SFTPConfig.Fingerprints {
+		if !utils.IsStringInSlice(value, expected.FsConfig.SFTPConfig.Fingerprints) {
+			return errors.New("SFTPFs fingerprints mismatch")
+		}
+	}
+	return nil
+}
+
 func compareAzBlobConfig(expected *dataprovider.User, actual *dataprovider.User) error {
 	if expected.FsConfig.AzBlobConfig.Container != actual.FsConfig.AzBlobConfig.Container {
 		return errors.New("Azure Blob container mismatch")
@@ -710,19 +746,41 @@ func compareAzBlobConfig(expected *dataprovider.User, actual *dataprovider.User)
 	return nil
 }
 
-func checkEncryptedSecret(expected, actual vfs.Secret) error {
+func areSecretEquals(expected, actual *kms.Secret) bool {
+	if expected == nil && actual == nil {
+		return true
+	}
+	if expected != nil && expected.IsEmpty() && actual == nil {
+		return true
+	}
+	if actual != nil && actual.IsEmpty() && expected == nil {
+		return true
+	}
+	return false
+}
+
+func checkEncryptedSecret(expected, actual *kms.Secret) error {
+	if areSecretEquals(expected, actual) {
+		return nil
+	}
+	if expected == nil && actual != nil && !actual.IsEmpty() {
+		return errors.New("secret mismatch")
+	}
+	if actual == nil && expected != nil && !expected.IsEmpty() {
+		return errors.New("secret mismatch")
+	}
 	if expected.IsPlain() && actual.IsEncrypted() {
-		if actual.Payload == "" {
+		if actual.GetPayload() == "" {
 			return errors.New("invalid secret payload")
 		}
-		if actual.AdditionalData != "" {
+		if actual.GetAdditionalData() != "" {
 			return errors.New("invalid secret additional data")
 		}
-		if actual.Key != "" {
+		if actual.GetKey() != "" {
 			return errors.New("invalid secret key")
 		}
 	} else {
-		if expected.Status != actual.Status || expected.Payload != actual.Payload {
+		if expected.GetStatus() != actual.GetStatus() || expected.GetPayload() != actual.GetPayload() {
 			return errors.New("secret mismatch")
 		}
 	}

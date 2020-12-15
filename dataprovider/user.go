@@ -14,6 +14,7 @@ import (
 
 	"golang.org/x/net/webdav"
 
+	"github.com/drakkan/sftpgo/kms"
 	"github.com/drakkan/sftpgo/logger"
 	"github.com/drakkan/sftpgo/utils"
 	"github.com/drakkan/sftpgo/vfs"
@@ -154,6 +155,8 @@ const (
 	S3FilesystemProvider                                  // AWS S3 compatible
 	GCSFilesystemProvider                                 // Google Cloud Storage
 	AzureBlobFilesystemProvider                           // Azure Blob Storage
+	CryptedFilesystemProvider                             // Local encrypted
+	SFTPFilesystemProvider                                // SFTP
 )
 
 // Filesystem defines cloud storage filesystem details
@@ -162,6 +165,8 @@ type Filesystem struct {
 	S3Config     vfs.S3FsConfig     `json:"s3config,omitempty"`
 	GCSConfig    vfs.GCSFsConfig    `json:"gcsconfig,omitempty"`
 	AzBlobConfig vfs.AzBlobFsConfig `json:"azblobconfig,omitempty"`
+	CryptConfig  vfs.CryptFsConfig  `json:"cryptconfig,omitempty"`
+	SFTPConfig   vfs.SFTPFsConfig   `json:"sftpconfig,omitempty"`
 }
 
 // User defines a SFTPGo user
@@ -220,16 +225,22 @@ type User struct {
 
 // GetFilesystem returns the filesystem for this user
 func (u *User) GetFilesystem(connectionID string) (vfs.Fs, error) {
-	if u.FsConfig.Provider == S3FilesystemProvider {
+	switch u.FsConfig.Provider {
+	case S3FilesystemProvider:
 		return vfs.NewS3Fs(connectionID, u.GetHomeDir(), u.FsConfig.S3Config)
-	} else if u.FsConfig.Provider == GCSFilesystemProvider {
+	case GCSFilesystemProvider:
 		config := u.FsConfig.GCSConfig
 		config.CredentialFile = u.getGCSCredentialsFilePath()
 		return vfs.NewGCSFs(connectionID, u.GetHomeDir(), config)
-	} else if u.FsConfig.Provider == AzureBlobFilesystemProvider {
+	case AzureBlobFilesystemProvider:
 		return vfs.NewAzBlobFs(connectionID, u.GetHomeDir(), u.FsConfig.AzBlobConfig)
+	case CryptedFilesystemProvider:
+		return vfs.NewCryptFs(connectionID, u.GetHomeDir(), u.FsConfig.CryptConfig)
+	case SFTPFilesystemProvider:
+		return vfs.NewSFTPFs(connectionID, u.FsConfig.SFTPConfig)
+	default:
+		return vfs.NewOsFs(connectionID, u.GetHomeDir(), u.VirtualFolders), nil
 	}
-	return vfs.NewOsFs(connectionID, u.GetHomeDir(), u.VirtualFolders), nil
 }
 
 // HideConfidentialData hides user confidential data
@@ -242,6 +253,11 @@ func (u *User) HideConfidentialData() {
 		u.FsConfig.GCSConfig.Credentials.Hide()
 	case AzureBlobFilesystemProvider:
 		u.FsConfig.AzBlobConfig.AccountKey.Hide()
+	case CryptedFilesystemProvider:
+		u.FsConfig.CryptConfig.Passphrase.Hide()
+	case SFTPFilesystemProvider:
+		u.FsConfig.SFTPConfig.Password.Hide()
+		u.FsConfig.SFTPConfig.PrivateKey.Hide()
 	}
 }
 
@@ -707,12 +723,17 @@ func (u *User) GetInfoString() string {
 		t := utils.GetTimeFromMsecSinceEpoch(u.LastLogin)
 		result += fmt.Sprintf("Last login: %v ", t.Format("2006-01-02 15:04:05")) // YYYY-MM-DD HH:MM:SS
 	}
-	if u.FsConfig.Provider == S3FilesystemProvider {
+	switch u.FsConfig.Provider {
+	case S3FilesystemProvider:
 		result += "Storage: S3 "
-	} else if u.FsConfig.Provider == GCSFilesystemProvider {
+	case GCSFilesystemProvider:
 		result += "Storage: GCS "
-	} else if u.FsConfig.Provider == AzureBlobFilesystemProvider {
+	case AzureBlobFilesystemProvider:
 		result += "Storage: Azure "
+	case CryptedFilesystemProvider:
+		result += "Storage: Encrypted "
+	case SFTPFilesystemProvider:
+		result += "Storage: SFTP "
 	}
 	if len(u.PublicKeys) > 0 {
 		result += fmt.Sprintf("Public keys: %v ", len(u.PublicKeys))
@@ -768,7 +789,30 @@ func (u User) GetDeniedIPAsString() string {
 	return result
 }
 
+// SetEmptySecretsIfNil sets the secrets to empty if nil
+func (u *User) SetEmptySecretsIfNil() {
+	if u.FsConfig.S3Config.AccessSecret == nil {
+		u.FsConfig.S3Config.AccessSecret = kms.NewEmptySecret()
+	}
+	if u.FsConfig.GCSConfig.Credentials == nil {
+		u.FsConfig.GCSConfig.Credentials = kms.NewEmptySecret()
+	}
+	if u.FsConfig.AzBlobConfig.AccountKey == nil {
+		u.FsConfig.AzBlobConfig.AccountKey = kms.NewEmptySecret()
+	}
+	if u.FsConfig.CryptConfig.Passphrase == nil {
+		u.FsConfig.CryptConfig.Passphrase = kms.NewEmptySecret()
+	}
+	if u.FsConfig.SFTPConfig.Password == nil {
+		u.FsConfig.SFTPConfig.Password = kms.NewEmptySecret()
+	}
+	if u.FsConfig.SFTPConfig.PrivateKey == nil {
+		u.FsConfig.SFTPConfig.PrivateKey = kms.NewEmptySecret()
+	}
+}
+
 func (u *User) getACopy() User {
+	u.SetEmptySecretsIfNil()
 	pubKeys := make([]string, len(u.PublicKeys))
 	copy(pubKeys, u.PublicKeys)
 	virtualFolders := make([]vfs.VirtualFolder, len(u.VirtualFolders))
@@ -799,7 +843,7 @@ func (u *User) getACopy() User {
 			Bucket:            u.FsConfig.S3Config.Bucket,
 			Region:            u.FsConfig.S3Config.Region,
 			AccessKey:         u.FsConfig.S3Config.AccessKey,
-			AccessSecret:      u.FsConfig.S3Config.AccessSecret,
+			AccessSecret:      u.FsConfig.S3Config.AccessSecret.Clone(),
 			Endpoint:          u.FsConfig.S3Config.Endpoint,
 			StorageClass:      u.FsConfig.S3Config.StorageClass,
 			KeyPrefix:         u.FsConfig.S3Config.KeyPrefix,
@@ -809,7 +853,7 @@ func (u *User) getACopy() User {
 		GCSConfig: vfs.GCSFsConfig{
 			Bucket:               u.FsConfig.GCSConfig.Bucket,
 			CredentialFile:       u.FsConfig.GCSConfig.CredentialFile,
-			Credentials:          u.FsConfig.GCSConfig.Credentials,
+			Credentials:          u.FsConfig.GCSConfig.Credentials.Clone(),
 			AutomaticCredentials: u.FsConfig.GCSConfig.AutomaticCredentials,
 			StorageClass:         u.FsConfig.GCSConfig.StorageClass,
 			KeyPrefix:            u.FsConfig.GCSConfig.KeyPrefix,
@@ -817,7 +861,7 @@ func (u *User) getACopy() User {
 		AzBlobConfig: vfs.AzBlobFsConfig{
 			Container:         u.FsConfig.AzBlobConfig.Container,
 			AccountName:       u.FsConfig.AzBlobConfig.AccountName,
-			AccountKey:        u.FsConfig.AzBlobConfig.AccountKey,
+			AccountKey:        u.FsConfig.AzBlobConfig.AccountKey.Clone(),
 			Endpoint:          u.FsConfig.AzBlobConfig.Endpoint,
 			SASURL:            u.FsConfig.AzBlobConfig.SASURL,
 			KeyPrefix:         u.FsConfig.AzBlobConfig.KeyPrefix,
@@ -826,6 +870,20 @@ func (u *User) getACopy() User {
 			UseEmulator:       u.FsConfig.AzBlobConfig.UseEmulator,
 			AccessTier:        u.FsConfig.AzBlobConfig.AccessTier,
 		},
+		CryptConfig: vfs.CryptFsConfig{
+			Passphrase: u.FsConfig.CryptConfig.Passphrase.Clone(),
+		},
+		SFTPConfig: vfs.SFTPFsConfig{
+			Endpoint:   u.FsConfig.SFTPConfig.Endpoint,
+			Username:   u.FsConfig.SFTPConfig.Username,
+			Password:   u.FsConfig.SFTPConfig.Password.Clone(),
+			PrivateKey: u.FsConfig.SFTPConfig.PrivateKey.Clone(),
+			Prefix:     u.FsConfig.SFTPConfig.Prefix,
+		},
+	}
+	if len(u.FsConfig.SFTPConfig.Fingerprints) > 0 {
+		fsConfig.SFTPConfig.Fingerprints = make([]string, len(u.FsConfig.SFTPConfig.Fingerprints))
+		copy(fsConfig.SFTPConfig.Fingerprints, u.FsConfig.SFTPConfig.Fingerprints)
 	}
 
 	return User{

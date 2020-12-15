@@ -740,8 +740,6 @@ func TestSSHCommandsRemoteFs(t *testing.T) {
 		connection: connection,
 		args:       []string{},
 	}
-	err = cmd.handleHashCommands()
-	assert.Error(t, err, "command must fail for a non local filesystem")
 
 	command, err := cmd.getSystemCommand()
 	assert.NoError(t, err)
@@ -1463,8 +1461,9 @@ func TestSCPDownloadFileData(t *testing.T) {
 		WriteError:   writeErr,
 	}
 	connection := &Connection{
-		BaseConnection: common.NewBaseConnection("", common.ProtocolSCP, dataprovider.User{}, nil),
-		channel:        &mockSSHChannelReadErr,
+		BaseConnection: common.NewBaseConnection("", common.ProtocolSCP, dataprovider.User{},
+			vfs.NewOsFs("", os.TempDir(), nil)),
+		channel: &mockSSHChannelReadErr,
 	}
 	scpCommand := scpCommand{
 		sshCommand: sshCommand{

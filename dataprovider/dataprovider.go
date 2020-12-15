@@ -42,6 +42,7 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"github.com/drakkan/sftpgo/httpclient"
+	"github.com/drakkan/sftpgo/kms"
 	"github.com/drakkan/sftpgo/logger"
 	"github.com/drakkan/sftpgo/metrics"
 	"github.com/drakkan/sftpgo/utils"
@@ -126,6 +127,7 @@ var (
 	sqlTableFoldersMapping  = "folders_mapping"
 	sqlTableSchemaVersion   = "schema_version"
 	argon2Params            *argon2id.Params
+	lastLoginMinDelay       = 10 * time.Minute
 )
 
 type schemaVersion struct {
@@ -150,6 +152,13 @@ type UserActions struct {
 	ExecuteOn []string `json:"execute_on" mapstructure:"execute_on"`
 	// Absolute path to an external program or an HTTP URL
 	Hook string `json:"hook" mapstructure:"hook"`
+}
+
+// ProviderStatus defines the provider status
+type ProviderStatus struct {
+	Driver   string `json:"driver"`
+	IsActive bool   `json:"is_active"`
+	Error    string `json:"error"`
 }
 
 // Config provider configuration
@@ -379,6 +388,7 @@ type Provider interface {
 	reloadConfig() error
 	initializeDatabase() error
 	migrateDatabase() error
+	revertDatabase(targetVersion int) error
 }
 
 // Initialize the data provider.
@@ -479,6 +489,12 @@ func validateSQLTablesPrefix() error {
 func InitializeDatabase(cnf Config, basePath string) error {
 	config = cnf
 
+	if filepath.IsAbs(config.CredentialsPath) {
+		credentialsDirPath = config.CredentialsPath
+	} else {
+		credentialsDirPath = filepath.Join(basePath, config.CredentialsPath)
+	}
+
 	err := createProvider(basePath)
 	if err != nil {
 		return err
@@ -488,6 +504,27 @@ func InitializeDatabase(cnf Config, basePath string) error {
 		return err
 	}
 	return provider.migrateDatabase()
+}
+
+// RevertDatabase restores schema and/or data to a previous version
+func RevertDatabase(cnf Config, basePath string, targetVersion int) error {
+	config = cnf
+
+	if filepath.IsAbs(config.CredentialsPath) {
+		credentialsDirPath = config.CredentialsPath
+	} else {
+		credentialsDirPath = filepath.Join(basePath, config.CredentialsPath)
+	}
+
+	err := createProvider(basePath)
+	if err != nil {
+		return err
+	}
+	err = provider.initializeDatabase()
+	if err != nil && err != ErrNoInitRequired {
+		return err
+	}
+	return provider.revertDatabase(targetVersion)
 }
 
 // CheckUserAndPass retrieves the SFTP user with the given username and password if a match is found or an error
@@ -551,7 +588,16 @@ func UpdateLastLogin(user User) error {
 	if config.ManageUsers == 0 {
 		return &MethodDisabledError{err: manageUsersDisabledError}
 	}
-	return provider.updateLastLogin(user.Username)
+	lastLogin := utils.GetTimeFromMsecSinceEpoch(user.LastLogin)
+	diff := -time.Until(lastLogin)
+	if diff < 0 || diff > lastLoginMinDelay {
+		err := provider.updateLastLogin(user.Username)
+		if err == nil {
+			updateWebDavCachedUserLastLogin(user.Username)
+		}
+		return err
+	}
+	return nil
 }
 
 // UpdateUserQuota updates the quota for the given SFTP user adding filesAdd and sizeAdd.
@@ -738,8 +784,18 @@ func ParseDumpData(data []byte) (BackupData, error) {
 }
 
 // GetProviderStatus returns an error if the provider is not available
-func GetProviderStatus() error {
-	return provider.checkAvailability()
+func GetProviderStatus() ProviderStatus {
+	err := provider.checkAvailability()
+	status := ProviderStatus{
+		Driver: config.Driver,
+	}
+	if err == nil {
+		status.IsActive = true
+	} else {
+		status.IsActive = false
+		status.Error = err.Error()
+	}
+	return status
 }
 
 // Close releases all provider resources.
@@ -779,9 +835,11 @@ func createProvider(basePath string) error {
 }
 
 func buildUserHomeDir(user *User) {
-	if len(user.HomeDir) == 0 {
-		if len(config.UsersBaseDir) > 0 {
+	if user.HomeDir == "" {
+		if config.UsersBaseDir != "" {
 			user.HomeDir = filepath.Join(config.UsersBaseDir, user.Username)
+		} else if user.FsConfig.Provider == SFTPFilesystemProvider {
+			user.HomeDir = filepath.Join(os.TempDir(), user.Username)
 		}
 	}
 }
@@ -1075,12 +1133,12 @@ func saveGCSCredentials(user *User) error {
 	if user.FsConfig.Provider != GCSFilesystemProvider {
 		return nil
 	}
-	if user.FsConfig.GCSConfig.Credentials.Payload == "" {
+	if user.FsConfig.GCSConfig.Credentials.GetPayload() == "" {
 		return nil
 	}
 	if config.PreferDatabaseCredentials {
 		if user.FsConfig.GCSConfig.Credentials.IsPlain() {
-			user.FsConfig.GCSConfig.Credentials.AdditionalData = user.Username
+			user.FsConfig.GCSConfig.Credentials.SetAdditionalData(user.Username)
 			err := user.FsConfig.GCSConfig.Credentials.Encrypt()
 			if err != nil {
 				return err
@@ -1089,7 +1147,7 @@ func saveGCSCredentials(user *User) error {
 		return nil
 	}
 	if user.FsConfig.GCSConfig.Credentials.IsPlain() {
-		user.FsConfig.GCSConfig.Credentials.AdditionalData = user.Username
+		user.FsConfig.GCSConfig.Credentials.SetAdditionalData(user.Username)
 		err := user.FsConfig.GCSConfig.Credentials.Encrypt()
 		if err != nil {
 			return &ValidationError{err: fmt.Sprintf("could not encrypt GCS credentials: %v", err)}
@@ -1108,54 +1166,75 @@ func saveGCSCredentials(user *User) error {
 	if err != nil {
 		return &ValidationError{err: fmt.Sprintf("could not save GCS credentials: %v", err)}
 	}
-	user.FsConfig.GCSConfig.Credentials = vfs.Secret{}
+	user.FsConfig.GCSConfig.Credentials = kms.NewEmptySecret()
 	return nil
 }
 
 func validateFilesystemConfig(user *User) error {
 	if user.FsConfig.Provider == S3FilesystemProvider {
-		err := vfs.ValidateS3FsConfig(&user.FsConfig.S3Config)
-		if err != nil {
+		if err := user.FsConfig.S3Config.Validate(); err != nil {
 			return &ValidationError{err: fmt.Sprintf("could not validate s3config: %v", err)}
 		}
-		if user.FsConfig.S3Config.AccessSecret.IsPlain() {
-			user.FsConfig.S3Config.AccessSecret.AdditionalData = user.Username
-			err = user.FsConfig.S3Config.AccessSecret.Encrypt()
-			if err != nil {
-				return &ValidationError{err: fmt.Sprintf("could not encrypt s3 access secret: %v", err)}
-			}
+		if err := user.FsConfig.S3Config.EncryptCredentials(user.Username); err != nil {
+			return &ValidationError{err: fmt.Sprintf("could not encrypt s3 access secret: %v", err)}
 		}
 		user.FsConfig.GCSConfig = vfs.GCSFsConfig{}
 		user.FsConfig.AzBlobConfig = vfs.AzBlobFsConfig{}
+		user.FsConfig.CryptConfig = vfs.CryptFsConfig{}
+		user.FsConfig.SFTPConfig = vfs.SFTPFsConfig{}
 		return nil
 	} else if user.FsConfig.Provider == GCSFilesystemProvider {
-		err := vfs.ValidateGCSFsConfig(&user.FsConfig.GCSConfig, user.getGCSCredentialsFilePath())
-		if err != nil {
+		if err := user.FsConfig.GCSConfig.Validate(user.getGCSCredentialsFilePath()); err != nil {
 			return &ValidationError{err: fmt.Sprintf("could not validate GCS config: %v", err)}
 		}
 		user.FsConfig.S3Config = vfs.S3FsConfig{}
 		user.FsConfig.AzBlobConfig = vfs.AzBlobFsConfig{}
+		user.FsConfig.CryptConfig = vfs.CryptFsConfig{}
+		user.FsConfig.SFTPConfig = vfs.SFTPFsConfig{}
 		return nil
 	} else if user.FsConfig.Provider == AzureBlobFilesystemProvider {
-		err := vfs.ValidateAzBlobFsConfig(&user.FsConfig.AzBlobConfig)
-		if err != nil {
+		if err := user.FsConfig.AzBlobConfig.Validate(); err != nil {
 			return &ValidationError{err: fmt.Sprintf("could not validate Azure Blob config: %v", err)}
 		}
-		if user.FsConfig.AzBlobConfig.AccountKey.IsPlain() {
-			user.FsConfig.AzBlobConfig.AccountKey.AdditionalData = user.Username
-			err = user.FsConfig.AzBlobConfig.AccountKey.Encrypt()
-			if err != nil {
-				return &ValidationError{err: fmt.Sprintf("could not encrypt Azure blob account key: %v", err)}
-			}
+		if err := user.FsConfig.AzBlobConfig.EncryptCredentials(user.Username); err != nil {
+			return &ValidationError{err: fmt.Sprintf("could not encrypt Azure blob account key: %v", err)}
 		}
 		user.FsConfig.S3Config = vfs.S3FsConfig{}
 		user.FsConfig.GCSConfig = vfs.GCSFsConfig{}
+		user.FsConfig.CryptConfig = vfs.CryptFsConfig{}
+		user.FsConfig.SFTPConfig = vfs.SFTPFsConfig{}
+		return nil
+	} else if user.FsConfig.Provider == CryptedFilesystemProvider {
+		if err := user.FsConfig.CryptConfig.Validate(); err != nil {
+			return &ValidationError{err: fmt.Sprintf("could not validate Crypt fs config: %v", err)}
+		}
+		if err := user.FsConfig.CryptConfig.EncryptCredentials(user.Username); err != nil {
+			return &ValidationError{err: fmt.Sprintf("could not encrypt Crypt fs passphrase: %v", err)}
+		}
+		user.FsConfig.S3Config = vfs.S3FsConfig{}
+		user.FsConfig.GCSConfig = vfs.GCSFsConfig{}
+		user.FsConfig.AzBlobConfig = vfs.AzBlobFsConfig{}
+		user.FsConfig.SFTPConfig = vfs.SFTPFsConfig{}
+		return nil
+	} else if user.FsConfig.Provider == SFTPFilesystemProvider {
+		if err := user.FsConfig.SFTPConfig.Validate(); err != nil {
+			return &ValidationError{err: fmt.Sprintf("could not validate SFTP fs config: %v", err)}
+		}
+		if err := user.FsConfig.SFTPConfig.EncryptCredentials(user.Username); err != nil {
+			return &ValidationError{err: fmt.Sprintf("could not encrypt SFTP fs credentials: %v", err)}
+		}
+		user.FsConfig.S3Config = vfs.S3FsConfig{}
+		user.FsConfig.GCSConfig = vfs.GCSFsConfig{}
+		user.FsConfig.AzBlobConfig = vfs.AzBlobFsConfig{}
+		user.FsConfig.CryptConfig = vfs.CryptFsConfig{}
 		return nil
 	}
 	user.FsConfig.Provider = LocalFilesystemProvider
 	user.FsConfig.S3Config = vfs.S3FsConfig{}
 	user.FsConfig.GCSConfig = vfs.GCSFsConfig{}
 	user.FsConfig.AzBlobConfig = vfs.AzBlobFsConfig{}
+	user.FsConfig.CryptConfig = vfs.CryptFsConfig{}
+	user.FsConfig.SFTPConfig = vfs.SFTPFsConfig{}
 	return nil
 }
 
@@ -1196,6 +1275,7 @@ func validateFolder(folder *vfs.BaseVirtualFolder) error {
 }
 
 func validateUser(user *User) error {
+	user.SetEmptySecretsIfNil()
 	buildUserHomeDir(user)
 	if err := validateBaseParams(user); err != nil {
 		return err
@@ -2080,6 +2160,15 @@ func updateVFoldersQuotaAfterRestore(foldersToScan []string) {
 	}
 }
 
+func updateWebDavCachedUserLastLogin(username string) {
+	result, ok := webDAVUsersCache.Load(username)
+	if ok {
+		cachedUser := result.(*CachedUser)
+		cachedUser.User.LastLogin = utils.GetTimeAsMsSinceEpoch(time.Now())
+		webDAVUsersCache.Store(cachedUser.User.Username, cachedUser)
+	}
+}
+
 // CacheWebDAVUser add a user to the WebDAV cache
 func CacheWebDAVUser(cachedUser *CachedUser, maxSize int) {
 	if maxSize > 0 {
@@ -2107,7 +2196,7 @@ func CacheWebDAVUser(cachedUser *CachedUser, maxSize int) {
 		}
 	}
 
-	if len(cachedUser.User.Username) > 0 {
+	if cachedUser.User.Username != "" {
 		webDAVUsersCache.Store(cachedUser.User.Username, cachedUser)
 	}
 }
@@ -2119,7 +2208,7 @@ func GetCachedWebDAVUser(username string) (interface{}, bool) {
 
 // RemoveCachedWebDAVUser removes a cached WebDAV user
 func RemoveCachedWebDAVUser(username string) {
-	if len(username) > 0 {
+	if username != "" {
 		webDAVUsersCache.Delete(username)
 	}
 }

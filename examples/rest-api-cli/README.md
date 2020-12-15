@@ -33,7 +33,7 @@ Basically there is a sub command for each REST API and the following global argu
 
 For each subcommand `--help` shows the available arguments, try for example:
 
-```python sftpgo_api_cli add_user --help```
+```python sftpgo_api_cli add-user --help```
 
 Additionally it can convert users to the SFTPGo format from some supported users stores
 
@@ -55,13 +55,21 @@ Output:
   "download_bandwidth": 60,
   "expiration_date": 1546297200000,
   "filesystem": {
-    "gcsconfig": {},
+    "azblobconfig": {
+      "account_key": {}
+    },
+    "cryptconfig": {
+      "passphrase": {}
+    },
+    "gcsconfig": {
+      "credentials": {}
+    },
     "provider": 1,
     "s3config": {
       "access_key": "accesskey",
       "access_secret": {
-        "payload": "ac46cec75466ba77e47f536436783b729ca5bbbb53252fda0de51f785a6da11ffb03",
-        "status": "AES-256-GCM"
+        "payload": "ALVIG4egZxRjKH8/8NsJViA7EH5MqsweqmwLhGj4M4AGYgMM2ygF7kbCw+R5aQ==",
+        "status": "Secretbox"
       },
       "bucket": "test",
       "endpoint": "http://127.0.0.1:9000",
@@ -70,6 +78,10 @@ Output:
       "storage_class": "Standard",
       "upload_concurrency": 4,
       "upload_part_size": 10
+    },
+    "sftpconfig": {
+      "password": {},
+      "private_key": {}
     }
   },
   "filters": {
@@ -178,9 +190,23 @@ Output:
   "download_bandwidth": 80,
   "expiration_date": 0,
   "filesystem": {
-    "gcsconfig": {},
+    "azblobconfig": {
+      "account_key": {}
+    },
+    "cryptconfig": {
+      "passphrase": {}
+    },
+    "gcsconfig": {
+      "credentials": {}
+    },
     "provider": 0,
-    "s3config": {}
+    "s3config": {
+      "access_secret": {}
+    },
+    "sftpconfig": {
+      "password": {},
+      "private_key": {}
+    }
   },
   "filters": {
     "denied_ip": [
@@ -253,9 +279,23 @@ Output:
     "download_bandwidth": 80,
     "expiration_date": 0,
     "filesystem": {
-      "gcsconfig": {},
+      "azblobconfig": {
+        "account_key": {}
+      },
+      "cryptconfig": {
+        "passphrase": {}
+      },
+      "gcsconfig": {
+        "credentials": {}
+      },
       "provider": 0,
-      "s3config": {}
+      "s3config": {
+        "access_secret": {}
+      },
+      "sftpconfig": {
+        "password": {},
+        "private_key": {}
+      }
     },
     "filters": {
       "denied_ip": [

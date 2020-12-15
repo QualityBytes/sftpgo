@@ -20,6 +20,9 @@ import (
 
 // BaseConnection defines common fields for a connection using any supported protocol
 type BaseConnection struct {
+	// last activity for this connection.
+	// Since this is accessed atomically we put as first element of the struct achieve 64 bit alignment
+	lastActivity int64
 	// Unique identifier for the connection
 	ID string
 	// user associated with this connection if any
@@ -29,8 +32,6 @@ type BaseConnection struct {
 	protocol  string
 	Fs        vfs.Fs
 	sync.RWMutex
-	// last activity for this connection
-	lastActivity    int64
 	transferID      uint64
 	activeTransfers []ActiveTransfer
 }
@@ -98,6 +99,14 @@ func (c *BaseConnection) UpdateLastActivity() {
 // GetLastActivity returns the last connection activity
 func (c *BaseConnection) GetLastActivity() time.Time {
 	return time.Unix(0, atomic.LoadInt64(&c.lastActivity))
+}
+
+// CloseFS closes the underlying fs
+func (c *BaseConnection) CloseFS() error {
+	if c.Fs != nil {
+		return c.Fs.Close()
+	}
+	return nil
 }
 
 // AddTransfer associates a new transfer to this connection
@@ -442,17 +451,24 @@ func (c *BaseConnection) getPathForSetStatPerms(fsPath, virtualPath string) stri
 
 // DoStat execute a Stat if mode = 0, Lstat if mode = 1
 func (c *BaseConnection) DoStat(fsPath string, mode int) (os.FileInfo, error) {
+	var info os.FileInfo
+	var err error
 	if mode == 1 {
-		return c.Fs.Lstat(c.getRealFsPath(fsPath))
+		info, err = c.Fs.Lstat(c.getRealFsPath(fsPath))
+	} else {
+		info, err = c.Fs.Stat(c.getRealFsPath(fsPath))
 	}
-	return c.Fs.Stat(c.getRealFsPath(fsPath))
+	if err == nil && vfs.IsCryptOsFs(c.Fs) {
+		info = c.Fs.(*vfs.CryptFs).ConvertFileInfo(info)
+	}
+	return info, err
 }
 
 func (c *BaseConnection) ignoreSetStat() bool {
 	if Config.SetstatMode == 1 {
 		return true
 	}
-	if Config.SetstatMode == 2 && !vfs.IsLocalOsFs(c.Fs) {
+	if Config.SetstatMode == 2 && !vfs.IsLocalOrSFTPFs(c.Fs) {
 		return true
 	}
 	return false
@@ -557,7 +573,7 @@ func (c *BaseConnection) truncateFile(fsPath, virtualPath string, size int64) er
 		initialSize = info.Size()
 		err = c.Fs.Truncate(fsPath, size)
 	}
-	if err == nil && vfs.IsLocalOsFs(c.Fs) {
+	if err == nil && vfs.IsLocalOrSFTPFs(c.Fs) {
 		sizeDiff := initialSize - size
 		vfolder, err := c.User.GetVirtualFolderForPath(path.Dir(virtualPath))
 		if err == nil {

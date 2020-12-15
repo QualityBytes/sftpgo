@@ -211,7 +211,7 @@ func (c *scpCommand) handleUploadFile(resolvedPath, filePath string, sizeToRead 
 
 	initialSize := int64(0)
 	if !isNewFile {
-		if vfs.IsLocalOsFs(c.connection.Fs) {
+		if vfs.IsLocalOrSFTPFs(c.connection.Fs) {
 			vfolder, err := c.connection.User.GetVirtualFolderForPath(path.Dir(requestPath))
 			if err == nil {
 				dataprovider.UpdateVirtualFolderQuota(vfolder.BaseVirtualFolder, 0, -fileSize, false) //nolint:errcheck
@@ -403,6 +403,9 @@ func (c *scpCommand) sendDownloadFileData(filePath string, stat os.FileInfo, tra
 		if err != nil {
 			return err
 		}
+	}
+	if vfs.IsCryptOsFs(c.connection.Fs) {
+		stat = c.connection.Fs.(*vfs.CryptFs).ConvertFileInfo(stat)
 	}
 
 	fileSize := stat.Size()

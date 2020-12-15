@@ -41,6 +41,7 @@ Flags:
       --az-upload-part-size int         The buffer size for multipart uploads
                                         (MB) (default 4)
       --az-use-emulator
+      --crypto-passphrase string        Passphrase for encryption/decryption
       --denied-patterns stringArray     Denied file patterns case insensitive.
                                         The format is:
                                         /dir::pattern1,pattern2.
@@ -53,6 +54,8 @@ Flags:
                                         1 => AWS S3 compatible
                                         2 => Google Cloud Storage
                                         3 => Azure Blob Storage
+                                        4 => Encrypted local filesystem
+                                        5 => SFTP
       --ftpd-cert string                Path to the certificate file for FTPS
       --ftpd-key string                 Path to the key file for FTPS
       --ftpd-port int                   0 means a random unprivileged port,
@@ -88,6 +91,16 @@ Flags:
                                         parallel (default 2)
       --s3-upload-part-size int         The buffer size for multipart uploads
                                         (MB) (default 5)
+      --sftp-endpoint string            SFTP endpoint as host:port for SFTP
+                                        provider
+      --sftp-fingerprints strings       SFTP fingerprints to verify remote host
+                                        key for SFTP provider
+      --sftp-key-path string            SFTP private key path for SFTP provider
+      --sftp-password string            SFTP password for SFTP provider
+      --sftp-prefix string              SFTP prefix allows restrict all
+                                        operations to a given path within the
+                                        remote SFTP server
+      --sftp-username string            SFTP user for SFTP provider
   -s, --sftpd-port int                  0 means a random unprivileged port,
                                         < 0 disabled
   -c, --ssh-commands strings            SSH commands to enable.

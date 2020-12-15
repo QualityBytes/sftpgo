@@ -11,6 +11,7 @@ import (
 
 	"github.com/drakkan/sftpgo/common"
 	"github.com/drakkan/sftpgo/dataprovider"
+	"github.com/drakkan/sftpgo/kms"
 	"github.com/drakkan/sftpgo/vfs"
 )
 
@@ -82,6 +83,7 @@ func addUser(w http.ResponseWriter, r *http.Request) {
 		sendAPIResponse(w, r, err, "", http.StatusBadRequest)
 		return
 	}
+	user.SetEmptySecretsIfNil()
 	switch user.FsConfig.Provider {
 	case dataprovider.S3FilesystemProvider:
 		if user.FsConfig.S3Config.AccessSecret.IsRedacted() {
@@ -96,6 +98,20 @@ func addUser(w http.ResponseWriter, r *http.Request) {
 	case dataprovider.AzureBlobFilesystemProvider:
 		if user.FsConfig.AzBlobConfig.AccountKey.IsRedacted() {
 			sendAPIResponse(w, r, errors.New("invalid account_key"), "", http.StatusBadRequest)
+			return
+		}
+	case dataprovider.CryptedFilesystemProvider:
+		if user.FsConfig.CryptConfig.Passphrase.IsRedacted() {
+			sendAPIResponse(w, r, errors.New("invalid passphrase"), "", http.StatusBadRequest)
+			return
+		}
+	case dataprovider.SFTPFilesystemProvider:
+		if user.FsConfig.SFTPConfig.Password.IsRedacted() {
+			sendAPIResponse(w, r, errors.New("invalid SFTP password"), "", http.StatusBadRequest)
+			return
+		}
+		if user.FsConfig.SFTPConfig.PrivateKey.IsRedacted() {
+			sendAPIResponse(w, r, errors.New("invalid SFTP private key"), "", http.StatusBadRequest)
 			return
 		}
 	}
@@ -136,33 +152,31 @@ func updateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	currentPermissions := user.Permissions
-	var currentS3AccessSecret vfs.Secret
-	var currentAzAccountKey vfs.Secret
-	var currentGCSCredentials vfs.Secret
-	if user.FsConfig.Provider == dataprovider.S3FilesystemProvider {
-		currentS3AccessSecret = user.FsConfig.S3Config.AccessSecret
-	}
-	if user.FsConfig.Provider == dataprovider.AzureBlobFilesystemProvider {
-		currentAzAccountKey = user.FsConfig.AzBlobConfig.AccountKey
-	}
-	if user.FsConfig.Provider == dataprovider.GCSFilesystemProvider {
-		currentGCSCredentials = user.FsConfig.GCSConfig.Credentials
-	}
+	currentS3AccessSecret := user.FsConfig.S3Config.AccessSecret
+	currentAzAccountKey := user.FsConfig.AzBlobConfig.AccountKey
+	currentGCSCredentials := user.FsConfig.GCSConfig.Credentials
+	currentCryptoPassphrase := user.FsConfig.CryptConfig.Passphrase
+	currentSFTPPassword := user.FsConfig.SFTPConfig.Password
+	currentSFTPKey := user.FsConfig.SFTPConfig.PrivateKey
+
 	user.Permissions = make(map[string][]string)
 	user.FsConfig.S3Config = vfs.S3FsConfig{}
 	user.FsConfig.AzBlobConfig = vfs.AzBlobFsConfig{}
 	user.FsConfig.GCSConfig = vfs.GCSFsConfig{}
+	user.FsConfig.CryptConfig = vfs.CryptFsConfig{}
+	user.FsConfig.SFTPConfig = vfs.SFTPFsConfig{}
 	err = render.DecodeJSON(r.Body, &user)
 	if err != nil {
 		sendAPIResponse(w, r, err, "", http.StatusBadRequest)
 		return
 	}
+	user.SetEmptySecretsIfNil()
 	// we use new Permissions if passed otherwise the old ones
 	if len(user.Permissions) == 0 {
 		user.Permissions = currentPermissions
 	}
-	updateEncryptedSecrets(&user, currentS3AccessSecret, currentAzAccountKey, currentGCSCredentials)
-
+	updateEncryptedSecrets(&user, currentS3AccessSecret, currentAzAccountKey, currentGCSCredentials, currentCryptoPassphrase,
+		currentSFTPPassword, currentSFTPKey)
 	if user.ID != userID {
 		sendAPIResponse(w, r, err, "user ID in request body does not match user ID in path parameter", http.StatusBadRequest)
 		return
@@ -207,21 +221,32 @@ func disconnectUser(username string) {
 	}
 }
 
-func updateEncryptedSecrets(user *dataprovider.User, currentS3AccessSecret, currentAzAccountKey, currentGCSCredentials vfs.Secret) {
+func updateEncryptedSecrets(user *dataprovider.User, currentS3AccessSecret, currentAzAccountKey,
+	currentGCSCredentials, currentCryptoPassphrase, currentSFTPPassword, currentSFTPKey *kms.Secret) {
 	// we use the new access secret if plain or empty, otherwise the old value
-	if user.FsConfig.Provider == dataprovider.S3FilesystemProvider {
-		if !user.FsConfig.S3Config.AccessSecret.IsPlain() && !user.FsConfig.S3Config.AccessSecret.IsEmpty() {
+	switch user.FsConfig.Provider {
+	case dataprovider.S3FilesystemProvider:
+		if user.FsConfig.S3Config.AccessSecret.IsNotPlainAndNotEmpty() {
 			user.FsConfig.S3Config.AccessSecret = currentS3AccessSecret
 		}
-	}
-	if user.FsConfig.Provider == dataprovider.AzureBlobFilesystemProvider {
-		if !user.FsConfig.AzBlobConfig.AccountKey.IsPlain() && !user.FsConfig.AzBlobConfig.AccountKey.IsEmpty() {
+	case dataprovider.AzureBlobFilesystemProvider:
+		if user.FsConfig.AzBlobConfig.AccountKey.IsNotPlainAndNotEmpty() {
 			user.FsConfig.AzBlobConfig.AccountKey = currentAzAccountKey
 		}
-	}
-	if user.FsConfig.Provider == dataprovider.GCSFilesystemProvider {
-		if !user.FsConfig.GCSConfig.Credentials.IsPlain() && !user.FsConfig.GCSConfig.Credentials.IsEmpty() {
+	case dataprovider.GCSFilesystemProvider:
+		if user.FsConfig.GCSConfig.Credentials.IsNotPlainAndNotEmpty() {
 			user.FsConfig.GCSConfig.Credentials = currentGCSCredentials
+		}
+	case dataprovider.CryptedFilesystemProvider:
+		if user.FsConfig.CryptConfig.Passphrase.IsNotPlainAndNotEmpty() {
+			user.FsConfig.CryptConfig.Passphrase = currentCryptoPassphrase
+		}
+	case dataprovider.SFTPFilesystemProvider:
+		if user.FsConfig.SFTPConfig.Password.IsNotPlainAndNotEmpty() {
+			user.FsConfig.SFTPConfig.Password = currentSFTPPassword
+		}
+		if user.FsConfig.SFTPConfig.PrivateKey.IsNotPlainAndNotEmpty() {
+			user.FsConfig.SFTPConfig.PrivateKey = currentSFTPKey
 		}
 	}
 }

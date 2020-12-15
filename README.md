@@ -8,19 +8,20 @@
 [![Mentioned in Awesome Go](https://awesome.re/mentioned-badge.svg)](https://github.com/avelino/awesome-go)
 
 Fully featured and highly configurable SFTP server with optional FTP/S and WebDAV support, written in Go.
-It can serve local filesystem, S3 (compatible) Object Storage, Google Cloud Storage and Azure Blob Storage.
+Several storage backends are supported: local filesystem, encrypted local filesystem, S3 (compatible) Object Storage, Google Cloud Storage, Azure Blob Storage, SFTP.
 
 ## Features
 
 - SFTPGo uses virtual accounts stored inside a "data provider".
 - SQLite, MySQL, PostgreSQL, bbolt (key/value store in pure Go) and in-memory data providers are supported.
-- Each account is chrooted to its home directory.
+- Each local account is chrooted in its home directory, for cloud-based accounts you can restrict access to a certain base path.
 - Public key and password authentication. Multiple public keys per user are supported.
 - SSH user [certificate authentication](https://cvsweb.openbsd.org/src/usr.bin/ssh/PROTOCOL.certkeys?rev=1.8).
 - Keyboard interactive authentication. You can easily setup a customizable multi-factor authentication.
 - Partial authentication. You can configure multi-step authentication requiring, for example, the user password after successful public key authentication.
 - Per user authentication methods. You can configure the allowed authentication methods for each user.
 - Custom authentication via external programs/HTTP API is supported.
+- [Data At Rest Encryption](./docs/dare.md) is supported.
 - Dynamic user modification before login via external programs/HTTP API is supported.
 - Quota support: accounts can have individual quota expressed as max total size and/or max number of files.
 - Bandwidth throttling is supported, with distinct settings for upload and download.
@@ -37,7 +38,7 @@ It can serve local filesystem, S3 (compatible) Object Storage, Google Cloud Stor
 - SCP and rsync are supported.
 - FTP/S is supported. You can configure the FTP service to require TLS for both control and data connections.
 - [WebDAV](./docs/webdav.md) is supported.
-- Support for serving local filesystem, S3 Compatible Object Storage and Google Cloud Storage over SFTP/SCP/FTP/WebDAV.
+- Support for serving local filesystem, encrypted local filesystem, S3 Compatible Object Storage, Google Cloud Storage, Azure Blob Storage or other SFTP accounts over SFTP/SCP/FTP/WebDAV.
 - Per user protocols restrictions. You can configure the allowed protocols (SSH/FTP/WebDAV) for each user.
 - [Prometheus metrics](./docs/metrics.md) are exposed.
 - Support for HAProxy PROXY protocol: you can proxy and/or load balance the SFTP/SCP/FTP/WebDAV service without losing the information about the client's address.
@@ -83,7 +84,7 @@ Alternately, you can [build from source](./docs/build-from-source.md).
 
 A full explanation of all configuration methods can be found [here](./docs/full-configuration.md).
 
-Please make sure to [initialize the data provider](#data-provider-initialization) before running the daemon!
+Please make sure to [initialize the data provider](#data-provider-initialization-and-management) before running the daemon!
 
 To start SFTPGo with the default settings, simply run:
 
@@ -93,13 +94,11 @@ sftpgo serve
 
 Check out [this documentation](./docs/service.md) if you want to run SFTPGo as a service.
 
-### Data provider initialization and update
+### Data provider initialization and management
 
 Before starting the SFTPGo server please ensure that the configured data provider is properly initialized/updated.
 
-SQL based data providers (SQLite, MySQL, PostgreSQL) require the creation of a database containing the required tables. Memory and bolt data providers do not require an initialization but they could require an update to the existing data after upgrading SFTPGo.
-
-For PostgreSQL and MySQL providers, you need to create the configured database.
+For PostgreSQL and MySQL providers, you need to create the configured database. For SQLite, the configured database will be automatically created at startup. Memory and bolt data providers do not require an initialization but they could require an update to the existing data after upgrading SFTPGo.
 
 SFTPGo will attempt to automatically detect if the data provider is initialized/updated and if not, will attempt to initialize/ update it on startup as needed.
 
@@ -118,6 +117,27 @@ sftpgo initprovider --help
 ```
 
 You can disable automatic data provider checks/updates at startup by setting the `update_mode` configuration key to `1`.
+
+If for some reason you want to downgrade SFTPGo, you may need to downgrade your data provider schema and data as well. You can use the `revertprovider` command for this task.
+
+We support the follwing schema versions:
+
+- `6`, this is the latest version
+- `4`, this is the schema for v1.0.0-v1.2.x
+
+So, if you plan to downgrade from git master to 1.2.x, you can prepare your data provider executing the following command from the configuration directory:
+
+```shell
+sftpgo revertprovider --to-version 4
+```
+
+Take a look at the CLI usage to learn how to specify a different configuration file:
+
+```bash
+sftpgo revertprovider --help
+```
+
+The `revertprovider` command is not supported for the memory provider.
 
 ## Users and folders management
 
@@ -179,11 +199,19 @@ Each user can be mapped with a Google Cloud Storage bucket or a bucket virtual f
 
 Each user can be mapped with an Azure Blob Storage container or a container virtual folder. This way, the mapped container/virtual folder is exposed over SFTP/SCP/FTP/WebDAV. More information about Azure Blob Storage integration can be found [here](./docs/azure-blob-storage.md).
 
+### SFTP backend
+
+Each user can be mapped to another SFTP server account or a subfolder of it. More information can be found [here](./docs/sftpfs.md).
+
+### Encrypted backend
+
+Data at-rest encryption is supported via the [cryptfs backend](./docs/dare.md).
+
 ### Other Storage backends
 
 Adding new storage backends is quite easy:
 
-- implement the [Fs interface](./vfs/vfs.go#L18 "interface for filesystem backends").
+- implement the [Fs interface](./vfs/vfs.go#L28 "interface for filesystem backends").
 - update the user method `GetFilesystem` to return the new backend
 - update the web interface and the REST API CLI
 - add the flags for the new storage backed to the `portable` mode

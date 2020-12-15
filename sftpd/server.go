@@ -166,6 +166,7 @@ func (c *Configuration) Initialize(configDir string) error {
 	}
 
 	if err := c.checkAndLoadHostKeys(configDir, serverConfig); err != nil {
+		serviceStatus.HostKeys = nil
 		return err
 	}
 
@@ -180,7 +181,8 @@ func (c *Configuration) Initialize(configDir string) error {
 	c.configureLoginBanner(serverConfig, configDir)
 	c.checkSSHCommands()
 
-	listener, err := net.Listen("tcp", fmt.Sprintf("%s:%d", c.BindAddress, c.BindPort))
+	addr := fmt.Sprintf("%s:%d", c.BindAddress, c.BindPort)
+	listener, err := net.Listen("tcp", addr)
 	if err != nil {
 		logger.Warn(logSender, "", "error starting listener on address %s:%d: %v", c.BindAddress, c.BindPort, err)
 		return err
@@ -191,6 +193,9 @@ func (c *Configuration) Initialize(configDir string) error {
 		return err
 	}
 	logger.Info(logSender, "", "server listener registered address: %v", listener.Addr().String())
+	serviceStatus.Address = addr
+	serviceStatus.IsActive = true
+	serviceStatus.SSHCommands = strings.Join(c.EnabledSSHCommands, ", ")
 
 	for {
 		var conn net.Conn
@@ -304,14 +309,9 @@ func (c *Configuration) AcceptInboundConnection(conn net.Conn, config *ssh.Serve
 	loginType := sconn.Permissions.Extensions["sftpgo_login_method"]
 	connectionID := hex.EncodeToString(sconn.SessionID())
 
-	fs, err := user.GetFilesystem(connectionID)
-
-	if err != nil {
-		logger.Warn(logSender, "", "could not create filesystem for user %#v err: %v", user.Username, err)
+	if err = checkRootPath(&user, connectionID); err != nil {
 		return
 	}
-
-	fs.CheckRootPath(user.Username, user.GetUID(), user.GetGID())
 
 	logger.Log(logger.LevelInfo, common.ProtocolSSH, connectionID,
 		"User id: %d, logged in with: %#v, username: %#v, home_dir: %#v remote addr: %#v",
@@ -354,24 +354,30 @@ func (c *Configuration) AcceptInboundConnection(conn net.Conn, config *ssh.Serve
 				switch req.Type {
 				case "subsystem":
 					if string(req.Payload[4:]) == "sftp" {
-						ok = true
+						fs, err := user.GetFilesystem(connectionID)
+						if err == nil {
+							ok = true
+							connection := Connection{
+								BaseConnection: common.NewBaseConnection(connID, common.ProtocolSFTP, user, fs),
+								ClientVersion:  string(sconn.ClientVersion()),
+								RemoteAddr:     remoteAddr,
+								channel:        channel,
+							}
+							go c.handleSftpConnection(channel, &connection)
+						}
+					}
+				case "exec":
+					// protocol will be set later inside processSSHCommand it could be SSH or SCP
+					fs, err := user.GetFilesystem(connectionID)
+					if err == nil {
 						connection := Connection{
-							BaseConnection: common.NewBaseConnection(connID, common.ProtocolSFTP, user, fs),
+							BaseConnection: common.NewBaseConnection(connID, "sshd_exec", user, fs),
 							ClientVersion:  string(sconn.ClientVersion()),
 							RemoteAddr:     remoteAddr,
 							channel:        channel,
 						}
-						go c.handleSftpConnection(channel, &connection)
+						ok = processSSHCommand(req.Payload, &connection, c.EnabledSSHCommands)
 					}
-				case "exec":
-					// protocol will be set later inside processSSHCommand it could be SSH or SCP
-					connection := Connection{
-						BaseConnection: common.NewBaseConnection(connID, "sshd_exec", user, fs),
-						ClientVersion:  string(sconn.ClientVersion()),
-						RemoteAddr:     remoteAddr,
-						channel:        channel,
-					}
-					ok = processSSHCommand(req.Payload, &connection, c.EnabledSSHCommands)
 				}
 				req.Reply(ok, nil) //nolint:errcheck
 			}
@@ -412,6 +418,21 @@ func (c *Configuration) createHandler(connection *Connection) sftp.Handlers {
 		FileCmd:  connection,
 		FileList: connection,
 	}
+}
+
+func checkRootPath(user *dataprovider.User, connectionID string) error {
+	if user.FsConfig.Provider != dataprovider.SFTPFilesystemProvider {
+		// for sftp fs check root path does nothing so don't open a useless SFTP connection
+		fs, err := user.GetFilesystem(connectionID)
+		if err != nil {
+			logger.Warn(logSender, "", "could not create filesystem for user %#v err: %v", user.Username, err)
+			return err
+		}
+
+		fs.CheckRootPath(user.Username, user.GetUID(), user.GetGID())
+		fs.Close()
+	}
+	return nil
 }
 
 func loginUser(user dataprovider.User, loginMethod, publicKey string, conn ssh.ConnMetadata) (*ssh.Permissions, error) {
@@ -563,8 +584,8 @@ func (c *Configuration) checkAndLoadHostKeys(configDir string, serverConfig *ssh
 	if err := c.checkHostKeyAutoGeneration(configDir); err != nil {
 		return err
 	}
-	for _, k := range c.HostKeys {
-		hostKey := k
+	serviceStatus.HostKeys = nil
+	for _, hostKey := range c.HostKeys {
 		if !utils.IsFileInputValid(hostKey) {
 			logger.Warn(logSender, "", "unable to load invalid host key %#v", hostKey)
 			logger.WarnToConsole("unable to load invalid host key %#v", hostKey)
@@ -584,8 +605,13 @@ func (c *Configuration) checkAndLoadHostKeys(configDir string, serverConfig *ssh
 		if err != nil {
 			return err
 		}
+		k := HostKey{
+			Path:        hostKey,
+			Fingerprint: ssh.FingerprintSHA256(private.PublicKey()),
+		}
+		serviceStatus.HostKeys = append(serviceStatus.HostKeys, k)
 		logger.Info(logSender, "", "Host key %#v loaded, type %#v, fingerprint %#v", hostKey,
-			private.PublicKey().Type(), ssh.FingerprintSHA256(private.PublicKey()))
+			private.PublicKey().Type(), k.Fingerprint)
 
 		// Add private key to the server configuration.
 		serverConfig.AddHostKey(private)

@@ -1,8 +1,8 @@
 openapi: 3.0.3
 info:
   title: SFTPGo
-  description: 'SFTPGo REST API'
-  version: 2.1.1
+  description: SFTPGo REST API
+  version: 2.2.2
 
 servers:
   - url: /api/v1
@@ -29,7 +29,7 @@ paths:
   /version:
     get:
       tags:
-        - version
+        - maintenance
       summary: Get version details
       operationId: get_version
       responses:
@@ -39,29 +39,6 @@ paths:
             application/json:
               schema:
                 $ref : '#/components/schemas/VersionInfo'
-        401:
-          $ref: '#/components/responses/Unauthorized'
-        403:
-          $ref: '#/components/responses/Forbidden'
-        500:
-          $ref: '#/components/responses/InternalServerError'
-        default:
-          $ref: '#/components/responses/DefaultResponse'
-  /providerstatus:
-    get:
-      tags:
-        - providerstatus
-      summary: Get data provider status
-      operationId: get_provider_status
-      responses:
-        200:
-          description: successful operation
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ApiResponse'
-              example:
-                message: "Alive"
         401:
           $ref: '#/components/responses/Unauthorized'
         403:
@@ -667,12 +644,35 @@ paths:
           $ref: '#/components/responses/InternalServerError'
         default:
           $ref: '#/components/responses/DefaultResponse'
+  /status:
+    get:
+      tags:
+        - maintenance
+      summary: Retrieve the status of the active services
+      operationId: get_status
+      responses:
+        200:
+          description: successful operation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServicesStatus'
+        400:
+          $ref: '#/components/responses/BadRequest'
+        401:
+          $ref: '#/components/responses/Unauthorized'
+        403:
+          $ref: '#/components/responses/Forbidden'
+        500:
+          $ref: '#/components/responses/InternalServerError'
+        default:
+          $ref: '#/components/responses/DefaultResponse'
   /dumpdata:
     get:
       tags:
         - maintenance
-      summary: Backup SFTPGo data serializing them as JSON
-      description: The backup is saved to a local file to avoid to expose users hashed passwords over the network. The output of dumpdata can be used as input for loaddata
+      summary: Backup SFTPGo data as data provider independent JSON
+      description: The backup is saved to a local file to avoid to expose sensitive data over the network. The output of dumpdata can be used as input for loaddata
       operationId: dumpdata
       parameters:
         - in: query
@@ -965,6 +965,10 @@ components:
           enum:
             - Plain
             - AES-256-GCM
+            - Secretbox
+            - GCP
+            - AWS
+            - VaultTransit
             - Redacted
           description: Set to "Plain" to add or update an existing secret, set to "Redacted" to preserve the existing value
         payload:
@@ -973,6 +977,9 @@ components:
           type: string
         additional_data:
           type: string
+        mode:
+          type: integer
+          description: 1 means encrypted using a master key
     S3Config:
       type: object
       properties:
@@ -1071,6 +1078,33 @@ components:
           type: boolean
       nullable: true
       description: Azure Blob Storage configuration details
+    CryptFsConfig:
+      type: object
+      properties:
+        passphrase:
+          $ref: '#/components/schemas/Secret'
+      description: Crypt filesystem configuration details
+    SFTPFsConfig:
+      type: object
+      properties:
+        endpoint:
+          type: string
+          description: remote SFTP endpoint as host:port
+        username:
+          type: string
+          description: you can specify a password or private key or both. In the latter case the private key will be tried first.
+        password:
+          $ref: '#/components/schemas/Secret'
+        private_key:
+          $ref: '#/components/schemas/Secret'
+        fingerprints:
+          type: array
+          items:
+            type: string
+          description: SHA256 fingerprints to use for host key verification. If you don't provide any fingerprint the remote host key will not be verified, this is a security risk
+        prefix:
+          type: string
+          description: Specifying a prefix you can restrict all operations to a given path within the remote SFTP server.
     FilesystemConfig:
       type: object
       properties:
@@ -1081,18 +1115,26 @@ components:
             - 1
             - 2
             - 3
+            - 4
+            - 5
           description: >
             Providers:
               * `0` - Local filesystem
               * `1` - S3 Compatible Object Storage
               * `2` - Google Cloud Storage
               * `3` - Azure Blob Storage
+              * `4` - Local filesystem encrypted
+              * `5` - SFTP
         s3config:
           $ref: '#/components/schemas/S3Config'
         gcsconfig:
           $ref: '#/components/schemas/GCSConfig'
         azblobconfig:
           $ref: '#/components/schemas/AzureBlobFsConfig'
+        cryptconfig:
+          $ref: '#/components/schemas/CryptFsConfig'
+        sftpconfig:
+          $ref: '#/components/schemas/SFTPFsConfig'
       description: Storage filesystem details
     BaseVirtualFolder:
       type: object
@@ -1234,7 +1276,7 @@ components:
         last_login:
           type: integer
           format: int64
-          description: Last user login as unix timestamp in milliseconds
+          description: Last user login as unix timestamp in milliseconds. It is saved at most once every 10 minutes
         filters:
           $ref: '#/components/schemas/UserFilters'
         filesystem:
@@ -1322,6 +1364,83 @@ components:
           type: integer
           format: int64
           description: scan start time as unix timestamp in milliseconds
+    SSHHostKey:
+      type: object
+      properties:
+        path:
+          type: string
+        fingerprint:
+          type: string
+    BaseServiceStatus:
+      type: object
+      properties:
+        is_active:
+          type: boolean
+        address:
+          type: string
+          description: TCP address the server listen on in the form "host:port"
+    SSHServiceStatus:
+      allOf:
+        - $ref: '#/components/schemas/BaseServiceStatus'
+        - type: object
+          properties:
+            host_keys:
+              type: array
+              items:
+                $ref: '#/components/schemas/SSHHostKey'
+            ssh_commands:
+              type: string
+              description: accepted SSH commands comma separated
+    FTPPassivePortRange:
+      type: object
+      properties:
+        start:
+          type: integer
+        end:
+          type: integer
+    FTPServiceStatus:
+      allOf:
+        - $ref: '#/components/schemas/BaseServiceStatus'
+        - type: object
+          properties:
+            passive_port_range:
+              $ref: '#/components/schemas/FTPPassivePortRange'
+            ftpes:
+              type: string
+              enum:
+                - Disabled
+                - Enabled
+                - Required
+    WebDAVServiceStatus:
+      allOf:
+        - $ref: '#/components/schemas/BaseServiceStatus'
+        - type: object
+          properties:
+            protocol:
+              type: string
+              enum:
+                - HTTP
+                - HTTPS
+    DataProviderStatus:
+      type: object
+      properties:
+        is_active:
+          type: boolean
+        driver:
+          type: string
+        error:
+          type: string
+    ServicesStatus:
+      type: object
+      properties:
+        ssh:
+          $ref: '#/components/schemas/SSHServiceStatus'
+        ftp:
+          $ref: '#/components/schemas/FTPServiceStatus'
+        webdav:
+          $ref: '#/components/schemas/WebDAVServiceStatus'
+        data_provider:
+          $ref: '#/components/schemas/DataProviderStatus'
     ApiResponse:
       type: object
       properties:

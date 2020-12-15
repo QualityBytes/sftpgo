@@ -2,6 +2,7 @@ package ftpd
 
 import (
 	"errors"
+	"io"
 	"os"
 	"path"
 	"time"
@@ -365,7 +366,11 @@ func (c *Connection) handleFTPUploadToExistingFile(flags int, resolvedPath, file
 		return nil, common.ErrQuotaExceeded
 	}
 	minWriteOffset := int64(0)
-	isResume := flags&os.O_APPEND != 0 && flags&os.O_TRUNC == 0
+	// ftpserverlib set os.O_WRONLY | os.O_APPEND for APPE
+	// and os.O_WRONLY | os.O_CREATE for REST. If is not APPE
+	// and REST = 0 then os.O_WRONLY | os.O_CREATE | os.O_TRUNC
+	// so if we don't have O_TRUC is a resume
+	isResume := flags&os.O_TRUNC == 0
 	// if there is a size limit remaining size cannot be 0 here, since quotaResult.HasSpace
 	// will return false in this case and we deny the upload before
 	maxWriteSize, err := c.GetMaxWriteSize(quotaResult, isResume, fileSize)
@@ -394,8 +399,12 @@ func (c *Connection) handleFTPUploadToExistingFile(flags int, resolvedPath, file
 		c.Log(logger.LevelDebug, "upload resume requested, file path: %#v initial size: %v", filePath, fileSize)
 		minWriteOffset = fileSize
 		initialSize = fileSize
+		if vfs.IsSFTPFs(c.Fs) {
+			// we need this since we don't allow resume with wrong offset, we should fix this in pkg/sftp
+			file.Seek(initialSize, io.SeekStart) //nolint:errcheck // for sftp seek cannot file, it simply set the offset
+		}
 	} else {
-		if vfs.IsLocalOsFs(c.Fs) {
+		if vfs.IsLocalOrSFTPFs(c.Fs) {
 			vfolder, err := c.User.GetVirtualFolderForPath(path.Dir(requestPath))
 			if err == nil {
 				dataprovider.UpdateVirtualFolderQuota(vfolder.BaseVirtualFolder, 0, -fileSize, false) //nolint:errcheck

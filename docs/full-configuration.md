@@ -24,8 +24,8 @@ Flags:
 
 The `serve` command supports the following flags:
 
-- `--config-dir` string. Location of the config dir. This directory should contain the configuration file and is used as the base directory for any files that use a relative path (eg. the private keys for the SFTP server, the SQLite or bblot database if you use SQLite or bbolt as data provider). The default value is "." or the value of `SFTPGO_CONFIG_DIR` environment variable.
-- `--config-file` string. Name of the configuration file. It must be the name of a file stored in `config-dir`, not the absolute path to the configuration file. The specified file name must have no extension because we automatically append JSON, YAML, TOML, HCL and Java extensions when we search for the file. The default value is "sftpgo" (and therefore `sftpgo.json`, `sftpgo.yaml` and so on are searched) or the value of `SFTPGO_CONFIG_FILE` environment variable.
+- `--config-dir` string. Location of the config dir. This directory is used as the base for files with a relative path, eg. the private keys for the SFTP server or the SQLite database if you use SQLite as data provider. The configuration file, if not explicitly set, is looked for in this dir. We support reading from JSON, TOML, YAML, HCL, envfile and Java properties config files. The default config file name is `sftpgo` and therefore `sftpgo.json`, `sftpgo.yaml` and so on are searched. The default value is the working directory (".") or the value of `SFTPGO_CONFIG_DIR` environment variable.
+- `--config-file` string. This flag explicitly defines the path, name and extension of the config file. If must be an absolute path or a path relative to the configuration directory. The specified file name must have a supported extension (JSON, YAML, TOML, HCL or Java properties). The default value is empty or the value of `SFTPGO_CONFIG_FILE` environment variable.
 - `--loaddata-from` string. Load users and folders from this file. The file must be specified as absolute path and it must contain a backup obtained using the `dumpdata` REST API or compatible content. The default value is empty or the value of `SFTPGO_LOADDATA_FROM` environment variable.
 - `--loaddata-clean` boolean. Determine if the loaddata-from file should be removed after a successful load. Default `false` or the value of `SFTPGO_LOADDATA_CLEAN` environment variable (1 or `true`, 0 or `false`).
 - `--loaddata-mode`, integer. Restore mode for data to load. 0 means new users are added, existing users are updated. 1 means new users are added, existing users are not modified. Default 1 or the value of `SFTPGO_LOADDATA_MODE` environment variable.
@@ -115,7 +115,7 @@ The configuration file contains the following sections:
     - `max_size`, integer. Maximum number of users to cache. 0 means unlimited. Default: 50.
 - **"data_provider"**, the configuration for the data provider
   - `driver`, string. Supported drivers are `sqlite`, `mysql`, `postgresql`, `bolt`, `memory`
-  - `name`, string. Database name. For driver `sqlite` this can be the database name relative to the config dir or the absolute path to the SQLite database. For driver `memory` this is the (optional) path relative to the config dir or the absolute path to the provider dump, obtained using the `dumpdata` REST API, to load. This dump will be loaded at startup and can be reloaded on demand sending a `SIGHUP` signal on Unix based systems and a `paramchange` request to the running service on Windows. The `memory` provider will not modify the provided file so quota usage and last login will not be persisted
+  - `name`, string. Database name. For driver `sqlite` this can be the database name relative to the config dir or the absolute path to the SQLite database. For driver `memory` this is the (optional) path relative to the config dir or the absolute path to the provider dump, obtained using the `dumpdata` REST API, to load. This dump will be loaded at startup and can be reloaded on demand sending a `SIGHUP` signal on Unix based systems and a `paramchange` request to the running service on Windows. The `memory` provider will not modify the provided file so quota usage and last login will not be persisted. If you plan to use a SQLite database over a `cifs` network share (this is not recommended in general) you must use the `nobrl` mount option otherwise you will get the `database is locked` error. Some users reported that the `bolt` provider works fine over `cifs` shares.
   - `host`, string. Database host. Leave empty for drivers `sqlite`, `bolt` and `memory`
   - `port`, integer. Database port. Leave empty for drivers `sqlite`, `bolt` and `memory`
   - `username`, string. Database user. Leave empty for drivers `sqlite`, `bolt` and `memory`
@@ -163,6 +163,10 @@ The configuration file contains the following sections:
   - `timeout`, integer. Timeout specifies a time limit, in seconds, for requests.
   - `ca_certificates`, list of strings. List of paths to extra CA certificates to trust. The paths can be absolute or relative to the config dir. Adding trusted CA certificates is a convenient way to use self-signed certificates without defeating the purpose of using TLS.
   - `skip_tls_verify`, boolean. if enabled the HTTP client accepts any TLS certificate presented by the server and any host name in that certificate. In this mode, TLS is susceptible to man-in-the-middle attacks. This should be used only for testing.
+- **kms**, configuration for the Key Management Service, more details can be found [here](./kms.md)
+  - `secrets`
+    - `url`
+    - `master_key_path`
 
 A full example showing the default config (in JSON format) can be found [here](../sftpgo.json).
 
