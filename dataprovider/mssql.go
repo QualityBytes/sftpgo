@@ -67,11 +67,17 @@ CREATE INDEX [folders_mapping_folder_id_idx] ON [{{folders_mapping}}] ([folder_i
 CREATE INDEX [folders_mapping_user_id_idx] ON [{{folders_mapping}}] ([user_id])`
 	mssqlV6SQL     = `ALTER TABLE [{{users}}] ADD [additional_info] [text] NULL`
 	mssqlV6DownSQL = `ALTER TABLE [{{users}}] DROP COLUMN [additional_info]`
-	mssqlV7SQL     = `CREATE TABLE "{{admins}}" ("id" serial NOT NULL PRIMARY KEY, "username" varchar(255) NOT NULL UNIQUE,
-"password" varchar(255) NOT NULL, "email" varchar(255) NULL, "status" integer NOT NULL, "permissions" text NOT NULL,
-"filters" text NULL, "additional_info" text NULL);
-`
-	mssqlV7DownSQL = `DROP TABLE "{{admins}}" CASCADE;`
+	mssqlV7SQL     = `CREATE TABLE [{{admins}}] (
+	[id] [int] IDENTITY(1,1) NOT NULL PRIMARY KEY,
+	[username] [varchar](255) NOT NULL UNIQUE,
+	[password] [varchar](255) NOT NULL,
+	[email] [varchar](255) NULL,
+	[status] [int] NOT NULL,
+	[permissions] [text] NOT NULL,
+	[filters] [text] NULL,
+	[additional_info] [text] NULL
+);`
+	mssqlV7DownSQL = `DROP TABLE [{{admins}}];`
 )
 
 // MSSQLProvider auth provider for Microsoft SQL Server database
