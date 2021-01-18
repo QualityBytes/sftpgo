@@ -62,19 +62,19 @@ func getUserByUsernameQuery() string {
 	return fmt.Sprintf(`SELECT %v FROM %v WHERE username = %v`, selectUserFields, sqlTableUsers, sqlPlaceholders[0])
 }
 
-func getUsersQuery(order string, username string) string {
+func getUsersQuery(order string) string {
 	if config.Driver == MSSQLDataProviderName {
-		return mssqlGetUsersQuery(order, username)
+		return mssqlGetUsersQuery(order)
 	}
-	return commonGetUsersQuery(order, username)
+	return commonGetUsersQuery(order)
 }
 
-func mssqlGetUsersQuery(order string, username string) string {
+func mssqlGetUsersQuery(order string) string {
 	return fmt.Sprintf(`SELECT %v FROM %v ORDER BY [username] %v OFFSET %v ROWS FETCH NEXT %v ROWS ONLY`, selectUserFields, sqlTableUsers,
 		order, sqlPlaceholders[1], sqlPlaceholders[0])
 }
 
-func commonGetUsersQuery(order string, username string) string {
+func commonGetUsersQuery(order string) string {
 	return fmt.Sprintf(`SELECT %v FROM %v ORDER BY username %v LIMIT %v OFFSET %v`, selectUserFields, sqlTableUsers,
 		order, sqlPlaceholders[0], sqlPlaceholders[1])
 }
