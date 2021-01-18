@@ -87,7 +87,9 @@ var (
 	ErrGenericFailure       = errors.New("failure")
 	ErrQuotaExceeded        = errors.New("denying write due to space limit")
 	ErrSkipPermissionsCheck = errors.New("permission check skipped")
-	ErrConnectionDenied     = errors.New("You are not allowed to connect")
+	ErrConnectionDenied     = errors.New("you are not allowed to connect")
+	ErrNoBinding            = errors.New("no binding configured")
+	ErrCrtRevoked           = errors.New("your certificate has been revoked")
 	errNoTransfer           = errors.New("requested transfer not found")
 	errTransferMismatch     = errors.New("transfer mismatch")
 )
@@ -105,13 +107,78 @@ var (
 )
 
 // Initialize sets the common configuration
-func Initialize(c Configuration) {
+func Initialize(c Configuration) error {
 	Config = c
 	Config.idleLoginTimeout = 2 * time.Minute
 	Config.idleTimeoutAsDuration = time.Duration(Config.IdleTimeout) * time.Minute
 	if Config.IdleTimeout > 0 {
 		startIdleTimeoutTicker(idleTimeoutCheckInterval)
 	}
+	Config.defender = nil
+	if c.DefenderConfig.Enabled {
+		defender, err := newInMemoryDefender(&c.DefenderConfig)
+		if err != nil {
+			return fmt.Errorf("defender initialization error: %v", err)
+		}
+		logger.Info(logSender, "", "defender initialized with config %+v", c.DefenderConfig)
+		Config.defender = defender
+	}
+	return nil
+}
+
+// ReloadDefender reloads the defender's block and safe lists
+func ReloadDefender() error {
+	if Config.defender == nil {
+		return nil
+	}
+
+	return Config.defender.Reload()
+}
+
+// IsBanned returns true if the specified IP address is banned
+func IsBanned(ip string) bool {
+	if Config.defender == nil {
+		return false
+	}
+
+	return Config.defender.IsBanned(ip)
+}
+
+// GetDefenderBanTime returns the ban time for the given IP
+// or nil if the IP is not banned or the defender is disabled
+func GetDefenderBanTime(ip string) *time.Time {
+	if Config.defender == nil {
+		return nil
+	}
+
+	return Config.defender.GetBanTime(ip)
+}
+
+// Unban removes the specified IP address from the banned ones
+func Unban(ip string) bool {
+	if Config.defender == nil {
+		return false
+	}
+
+	return Config.defender.Unban(ip)
+}
+
+// GetDefenderScore returns the score for the given IP
+func GetDefenderScore(ip string) int {
+	if Config.defender == nil {
+		return 0
+	}
+
+	return Config.defender.GetScore(ip)
+}
+
+// AddDefenderEvent adds the specified defender event for the given IP
+func AddDefenderEvent(ip string, event HostEvent) {
+	if Config.defender == nil {
+		return
+	}
+
+	Config.defender.AddEvent(ip, event)
 }
 
 func startIdleTimeoutTicker(duration time.Duration) {
@@ -247,9 +314,14 @@ type Configuration struct {
 	// Absolute path to an external program or an HTTP URL to invoke after a user connects
 	// and before he tries to login. It allows you to reject the connection based on the source
 	// ip address. Leave empty do disable.
-	PostConnectHook       string `json:"post_connect_hook" mapstructure:"post_connect_hook"`
+	PostConnectHook string `json:"post_connect_hook" mapstructure:"post_connect_hook"`
+	// Maximum number of concurrent client connections. 0 means unlimited
+	MaxTotalConnections int `json:"max_total_connections" mapstructure:"max_total_connections"`
+	// Defender configuration
+	DefenderConfig        DefenderConfig `json:"defender" mapstructure:"defender"`
 	idleTimeoutAsDuration time.Duration
 	idleLoginTimeout      time.Duration
+	defender              Defender
 }
 
 // IsAtomicUploadEnabled returns true if atomic upload is enabled
@@ -291,51 +363,50 @@ func (c *Configuration) GetProxyListener(listener net.Listener) (*proxyproto.Lis
 }
 
 // ExecutePostConnectHook executes the post connect hook if defined
-func (c *Configuration) ExecutePostConnectHook(remoteAddr, protocol string) error {
-	if len(c.PostConnectHook) == 0 {
+func (c *Configuration) ExecutePostConnectHook(ipAddr, protocol string) error {
+	if c.PostConnectHook == "" {
 		return nil
 	}
-	ip := utils.GetIPFromRemoteAddress(remoteAddr)
 	if strings.HasPrefix(c.PostConnectHook, "http") {
 		var url *url.URL
 		url, err := url.Parse(c.PostConnectHook)
 		if err != nil {
 			logger.Warn(protocol, "", "Login from ip %#v denied, invalid post connect hook %#v: %v",
-				ip, c.PostConnectHook, err)
+				ipAddr, c.PostConnectHook, err)
 			return err
 		}
 		httpClient := httpclient.GetHTTPClient()
 		q := url.Query()
-		q.Add("ip", ip)
+		q.Add("ip", ipAddr)
 		q.Add("protocol", protocol)
 		url.RawQuery = q.Encode()
 
 		resp, err := httpClient.Get(url.String())
 		if err != nil {
-			logger.Warn(protocol, "", "Login from ip %#v denied, error executing post connect hook: %v", ip, err)
+			logger.Warn(protocol, "", "Login from ip %#v denied, error executing post connect hook: %v", ipAddr, err)
 			return err
 		}
 		defer resp.Body.Close()
 		if resp.StatusCode != http.StatusOK {
-			logger.Warn(protocol, "", "Login from ip %#v denied, post connect hook response code: %v", ip, resp.StatusCode)
+			logger.Warn(protocol, "", "Login from ip %#v denied, post connect hook response code: %v", ipAddr, resp.StatusCode)
 			return errUnexpectedHTTResponse
 		}
 		return nil
 	}
 	if !filepath.IsAbs(c.PostConnectHook) {
 		err := fmt.Errorf("invalid post connect hook %#v", c.PostConnectHook)
-		logger.Warn(protocol, "", "Login from ip %#v denied: %v", ip, err)
+		logger.Warn(protocol, "", "Login from ip %#v denied: %v", ipAddr, err)
 		return err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, c.PostConnectHook)
 	cmd.Env = append(os.Environ(),
-		fmt.Sprintf("SFTPGO_CONNECTION_IP=%v", ip),
+		fmt.Sprintf("SFTPGO_CONNECTION_IP=%v", ipAddr),
 		fmt.Sprintf("SFTPGO_CONNECTION_PROTOCOL=%v", protocol))
 	err := cmd.Run()
 	if err != nil {
-		logger.Warn(protocol, "", "Login from ip %#v denied, connect hook error: %v", ip, err)
+		logger.Warn(protocol, "", "Login from ip %#v denied, connect hook error: %v", ipAddr, err)
 	}
 	return err
 }
@@ -523,7 +594,7 @@ func (conns *ActiveConnections) checkIdles() {
 
 	for _, c := range conns.connections {
 		idleTime := time.Since(c.GetLastActivity())
-		isUnauthenticatedFTPUser := (c.GetProtocol() == ProtocolFTP && len(c.GetUsername()) == 0)
+		isUnauthenticatedFTPUser := (c.GetProtocol() == ProtocolFTP && c.GetUsername() == "")
 
 		if idleTime > Config.idleTimeoutAsDuration || (isUnauthenticatedFTPUser && idleTime > Config.idleLoginTimeout) {
 			defer func(conn ActiveConnection, isFTPNoAuth bool) {
@@ -534,6 +605,7 @@ func (conns *ActiveConnections) checkIdles() {
 					ip := utils.GetIPFromRemoteAddress(c.GetRemoteAddress())
 					logger.ConnectionFailedLog("", ip, dataprovider.LoginMethodNoAuthTryed, c.GetProtocol(), "client idle")
 					metrics.AddNoAuthTryed()
+					AddDefenderEvent(ip, HostEventNoLoginTried)
 					dataprovider.ExecutePostLoginHook("", dataprovider.LoginMethodNoAuthTryed, ip, c.GetProtocol(),
 						dataprovider.ErrNoAuthTryed)
 				}
@@ -542,6 +614,18 @@ func (conns *ActiveConnections) checkIdles() {
 	}
 
 	conns.RUnlock()
+}
+
+// IsNewConnectionAllowed returns false if the maximum number of concurrent allowed connections is exceeded
+func (conns *ActiveConnections) IsNewConnectionAllowed() bool {
+	if Config.MaxTotalConnections == 0 {
+		return true
+	}
+
+	conns.RLock()
+	defer conns.RUnlock()
+
+	return len(conns.connections) < Config.MaxTotalConnections
 }
 
 // GetStats returns stats for active connections
@@ -597,16 +681,23 @@ func (c ConnectionStatus) GetConnectionDuration() string {
 
 // GetConnectionInfo returns connection info.
 // Protocol,Client Version and RemoteAddress are returned.
-// For SSH commands the issued command is returned too.
 func (c ConnectionStatus) GetConnectionInfo() string {
-	result := fmt.Sprintf("%v. Client: %#v From: %#v", c.Protocol, c.ClientVersion, c.RemoteAddress)
-	if c.Protocol == ProtocolSSH && len(c.Command) > 0 {
-		result += fmt.Sprintf(". Command: %#v", c.Command)
+	var result strings.Builder
+
+	result.WriteString(fmt.Sprintf("%v. Client: %#v From: %#v", c.Protocol, c.ClientVersion, c.RemoteAddress))
+
+	if c.Command == "" {
+		return result.String()
 	}
-	if c.Protocol == ProtocolWebDAV && len(c.Command) > 0 {
-		result += fmt.Sprintf(". Method: %#v", c.Command)
+
+	switch c.Protocol {
+	case ProtocolSSH, ProtocolFTP:
+		result.WriteString(fmt.Sprintf(". Command: %#v", c.Command))
+	case ProtocolWebDAV:
+		result.WriteString(fmt.Sprintf(". Method: %#v", c.Command))
 	}
-	return result
+
+	return result.String()
 }
 
 // GetTransfersAsString returns the active transfers as string

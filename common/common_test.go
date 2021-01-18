@@ -99,7 +99,11 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	logger.InfoToConsole("Starting COMMON tests, provider: %v", driver)
-	Initialize(Configuration{})
+	err = Initialize(Configuration{})
+	if err != nil {
+		logger.WarnToConsole("error initializing common: %v", err)
+		os.Exit(1)
+	}
 	httpConfig := httpclient.Config{
 		Timeout: 5,
 	}
@@ -175,7 +179,7 @@ func initializeDataprovider(trackQuota int) (string, error) {
 	if trackQuota >= 0 && trackQuota <= 2 {
 		cfg.Config.TrackQuota = trackQuota
 	}
-	return cfg.Config.Driver, dataprovider.Initialize(cfg.Config, configDir)
+	return cfg.Config.Driver, dataprovider.Initialize(cfg.Config, configDir, true)
 }
 
 func closeDataprovider() error {
@@ -225,11 +229,82 @@ func TestSSHConnections(t *testing.T) {
 	assert.NoError(t, sshConn3.Close())
 }
 
+func TestDefenderIntegration(t *testing.T) {
+	// by default defender is nil
+	configCopy := Config
+
+	ip := "127.1.1.1"
+
+	assert.Nil(t, ReloadDefender())
+
+	AddDefenderEvent(ip, HostEventNoLoginTried)
+	assert.False(t, IsBanned(ip))
+
+	assert.Nil(t, GetDefenderBanTime(ip))
+	assert.False(t, Unban(ip))
+	assert.Equal(t, 0, GetDefenderScore(ip))
+
+	Config.DefenderConfig = DefenderConfig{
+		Enabled:          true,
+		BanTime:          10,
+		BanTimeIncrement: 50,
+		Threshold:        0,
+		ScoreInvalid:     2,
+		ScoreValid:       1,
+		ObservationTime:  15,
+		EntriesSoftLimit: 100,
+		EntriesHardLimit: 150,
+	}
+	err := Initialize(Config)
+	assert.Error(t, err)
+	Config.DefenderConfig.Threshold = 3
+	err = Initialize(Config)
+	assert.NoError(t, err)
+	assert.Nil(t, ReloadDefender())
+
+	AddDefenderEvent(ip, HostEventNoLoginTried)
+	assert.False(t, IsBanned(ip))
+	assert.Equal(t, 2, GetDefenderScore(ip))
+	assert.False(t, Unban(ip))
+	assert.Nil(t, GetDefenderBanTime(ip))
+
+	AddDefenderEvent(ip, HostEventLoginFailed)
+	assert.True(t, IsBanned(ip))
+	assert.Equal(t, 0, GetDefenderScore(ip))
+	assert.NotNil(t, GetDefenderBanTime(ip))
+	assert.True(t, Unban(ip))
+	assert.Nil(t, GetDefenderBanTime(ip))
+	assert.False(t, Unban(ip))
+
+	Config = configCopy
+}
+
+func TestMaxConnections(t *testing.T) {
+	oldValue := Config.MaxTotalConnections
+	Config.MaxTotalConnections = 1
+
+	assert.True(t, Connections.IsNewConnectionAllowed())
+	c := NewBaseConnection("id", ProtocolSFTP, dataprovider.User{}, nil)
+	fakeConn := &fakeConnection{
+		BaseConnection: c,
+	}
+	Connections.Add(fakeConn)
+	assert.Len(t, Connections.GetStats(), 1)
+	assert.False(t, Connections.IsNewConnectionAllowed())
+
+	res := Connections.Close(fakeConn.GetID())
+	assert.True(t, res)
+	assert.Eventually(t, func() bool { return len(Connections.GetStats()) == 0 }, 300*time.Millisecond, 50*time.Millisecond)
+
+	Config.MaxTotalConnections = oldValue
+}
+
 func TestIdleConnections(t *testing.T) {
 	configCopy := Config
 
 	Config.IdleTimeout = 1
-	Initialize(Config)
+	err := Initialize(Config)
+	assert.NoError(t, err)
 
 	conn1, conn2 := net.Pipe()
 	customConn1 := &customNetConn{
@@ -310,6 +385,7 @@ func TestCloseConnection(t *testing.T) {
 	fakeConn := &fakeConnection{
 		BaseConnection: c,
 	}
+	assert.True(t, Connections.IsNewConnectionAllowed())
 	Connections.Add(fakeConn)
 	assert.Len(t, Connections.GetStats(), 1)
 	res := Connections.Close(fakeConn.GetID())
@@ -499,39 +575,36 @@ func TestProxyProtocol(t *testing.T) {
 func TestPostConnectHook(t *testing.T) {
 	Config.PostConnectHook = ""
 
-	remoteAddr := &net.IPAddr{
-		IP:   net.ParseIP("127.0.0.1"),
-		Zone: "",
-	}
+	ipAddr := "127.0.0.1"
 
-	assert.NoError(t, Config.ExecutePostConnectHook(remoteAddr.String(), ProtocolFTP))
+	assert.NoError(t, Config.ExecutePostConnectHook(ipAddr, ProtocolFTP))
 
 	Config.PostConnectHook = "http://foo\x7f.com/"
-	assert.Error(t, Config.ExecutePostConnectHook(remoteAddr.String(), ProtocolSFTP))
+	assert.Error(t, Config.ExecutePostConnectHook(ipAddr, ProtocolSFTP))
 
 	Config.PostConnectHook = "http://invalid:1234/"
-	assert.Error(t, Config.ExecutePostConnectHook(remoteAddr.String(), ProtocolSFTP))
+	assert.Error(t, Config.ExecutePostConnectHook(ipAddr, ProtocolSFTP))
 
 	Config.PostConnectHook = fmt.Sprintf("http://%v/404", httpAddr)
-	assert.Error(t, Config.ExecutePostConnectHook(remoteAddr.String(), ProtocolFTP))
+	assert.Error(t, Config.ExecutePostConnectHook(ipAddr, ProtocolFTP))
 
 	Config.PostConnectHook = fmt.Sprintf("http://%v", httpAddr)
-	assert.NoError(t, Config.ExecutePostConnectHook(remoteAddr.String(), ProtocolFTP))
+	assert.NoError(t, Config.ExecutePostConnectHook(ipAddr, ProtocolFTP))
 
 	Config.PostConnectHook = "invalid"
-	assert.Error(t, Config.ExecutePostConnectHook(remoteAddr.String(), ProtocolFTP))
+	assert.Error(t, Config.ExecutePostConnectHook(ipAddr, ProtocolFTP))
 
 	if runtime.GOOS == osWindows {
 		Config.PostConnectHook = "C:\\bad\\command"
-		assert.Error(t, Config.ExecutePostConnectHook(remoteAddr.String(), ProtocolSFTP))
+		assert.Error(t, Config.ExecutePostConnectHook(ipAddr, ProtocolSFTP))
 	} else {
 		Config.PostConnectHook = "/invalid/path"
-		assert.Error(t, Config.ExecutePostConnectHook(remoteAddr.String(), ProtocolSFTP))
+		assert.Error(t, Config.ExecutePostConnectHook(ipAddr, ProtocolSFTP))
 
 		hookCmd, err := exec.LookPath("true")
 		assert.NoError(t, err)
 		Config.PostConnectHook = hookCmd
-		assert.NoError(t, Config.ExecutePostConnectHook(remoteAddr.String(), ProtocolSFTP))
+		assert.NoError(t, Config.ExecutePostConnectHook(ipAddr, ProtocolSFTP))
 	}
 
 	Config.PostConnectHook = ""

@@ -39,7 +39,6 @@ type Service struct {
 	PortableUser      dataprovider.User
 	LogCompress       bool
 	LogVerbose        bool
-	Profiler          bool
 	LoadDataClean     bool
 	LoadDataFrom      string
 	LoadDataMode      int
@@ -65,8 +64,8 @@ func (s *Service) Start() error {
 		}
 	}
 	logger.Info(logSender, "", "starting SFTPGo %v, config dir: %v, config file: %v, log max size: %v log max backups: %v "+
-		"log max age: %v log verbose: %v, log compress: %v, profile: %v load data from: %#v", version.GetAsString(), s.ConfigDir, s.ConfigFile,
-		s.LogMaxSize, s.LogMaxBackups, s.LogMaxAge, s.LogVerbose, s.LogCompress, s.Profiler, s.LoadDataFrom)
+		"log max age: %v log verbose: %v, log compress: %v, load data from: %#v", version.GetAsString(), s.ConfigDir, s.ConfigFile,
+		s.LogMaxSize, s.LogMaxBackups, s.LogMaxAge, s.LogVerbose, s.LogCompress, s.LoadDataFrom)
 	// in portable mode we don't read configuration from file
 	if s.PortableMode != 1 {
 		err := config.LoadConfig(s.ConfigDir, s.ConfigFile)
@@ -82,9 +81,14 @@ func (s *Service) Start() error {
 		return errors.New(infoString)
 	}
 
-	common.Initialize(config.GetCommonConfig())
+	err := common.Initialize(config.GetCommonConfig())
+	if err != nil {
+		logger.Error(logSender, "", "%v", err)
+		logger.ErrorToConsole("%v", err)
+		os.Exit(1)
+	}
 	kmsConfig := config.GetKMSConfig()
-	err := kmsConfig.Initialize()
+	err = kmsConfig.Initialize()
 	if err != nil {
 		logger.Error(logSender, "", "unable to initialize KMS: %v", err)
 		logger.ErrorToConsole("unable to initialize KMS: %v", err)
@@ -93,7 +97,7 @@ func (s *Service) Start() error {
 
 	providerConf := config.GetProviderConf()
 
-	err = dataprovider.Initialize(providerConf, s.ConfigDir)
+	err = dataprovider.Initialize(providerConf, s.ConfigDir, s.PortableMode == 0)
 	if err != nil {
 		logger.Error(logSender, "", "error initializing data provider: %v", err)
 		logger.ErrorToConsole("error initializing data provider: %v", err)
@@ -102,7 +106,7 @@ func (s *Service) Start() error {
 
 	if s.PortableMode == 1 {
 		// create the user for portable mode
-		err = dataprovider.AddUser(s.PortableUser)
+		err = dataprovider.AddUser(&s.PortableUser)
 		if err != nil {
 			logger.ErrorToConsole("error adding portable user: %v", err)
 			return err
@@ -128,8 +132,9 @@ func (s *Service) startServices() {
 	ftpdConf := config.GetFTPDConfig()
 	httpdConf := config.GetHTTPDConfig()
 	webDavDConf := config.GetWebDAVDConfig()
+	telemetryConf := config.GetTelemetryConfig()
 
-	if sftpdConf.BindPort > 0 {
+	if sftpdConf.ShouldBind() {
 		go func() {
 			logger.Debug(logSender, "", "initializing SFTP server with config %+v", sftpdConf)
 			if err := sftpdConf.Initialize(s.ConfigDir); err != nil {
@@ -143,9 +148,9 @@ func (s *Service) startServices() {
 		logger.Debug(logSender, "", "SFTP server not started, disabled in config file")
 	}
 
-	if httpdConf.BindPort > 0 {
+	if httpdConf.ShouldBind() {
 		go func() {
-			if err := httpdConf.Initialize(s.ConfigDir, s.Profiler); err != nil {
+			if err := httpdConf.Initialize(s.ConfigDir); err != nil {
 				logger.Error(logSender, "", "could not start HTTP server: %v", err)
 				logger.ErrorToConsole("could not start HTTP server: %v", err)
 				s.Error = err
@@ -158,7 +163,7 @@ func (s *Service) startServices() {
 			logger.DebugToConsole("HTTP server not started, disabled in config file")
 		}
 	}
-	if ftpdConf.BindPort > 0 {
+	if ftpdConf.ShouldBind() {
 		go func() {
 			if err := ftpdConf.Initialize(s.ConfigDir); err != nil {
 				logger.Error(logSender, "", "could not start FTP server: %v", err)
@@ -170,7 +175,7 @@ func (s *Service) startServices() {
 	} else {
 		logger.Debug(logSender, "", "FTP server not started, disabled in config file")
 	}
-	if webDavDConf.BindPort > 0 {
+	if webDavDConf.ShouldBind() {
 		go func() {
 			if err := webDavDConf.Initialize(s.ConfigDir); err != nil {
 				logger.Error(logSender, "", "could not start WebDAV server: %v", err)
@@ -181,6 +186,21 @@ func (s *Service) startServices() {
 		}()
 	} else {
 		logger.Debug(logSender, "", "WebDAV server not started, disabled in config file")
+	}
+	if telemetryConf.ShouldBind() {
+		go func() {
+			if err := telemetryConf.Initialize(s.ConfigDir); err != nil {
+				logger.Error(logSender, "", "could not start telemetry server: %v", err)
+				logger.ErrorToConsole("could not start telemetry server: %v", err)
+				s.Error = err
+			}
+			s.Shutdown <- true
+		}()
+	} else {
+		logger.Debug(logSender, "", "telemetry server not started, disabled in config file")
+		if s.PortableMode != 1 {
+			logger.DebugToConsole("telemetry server not started, disabled in config file")
+		}
 	}
 }
 

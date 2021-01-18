@@ -33,18 +33,20 @@ Several storage backends are supported: local filesystem, encrypted local filesy
 - Virtual folders are supported: directories outside the user home directory can be exposed as virtual folders.
 - Configurable custom commands and/or HTTP notifications on file upload, download, pre-delete, delete, rename, on SSH commands and on user add, update and delete.
 - Automatically terminating idle connections.
+- Automatic blocklist management is supported using the built-in [defender](./docs/defender.md).
 - Atomic uploads are configurable.
 - Support for Git repositories over SSH.
 - SCP and rsync are supported.
 - FTP/S is supported. You can configure the FTP service to require TLS for both control and data connections.
 - [WebDAV](./docs/webdav.md) is supported.
+- Two-Way TLS authentication, aka TLS with client certificate authentication, is supported for FTPS and WebDAV over HTTPS.
 - Support for serving local filesystem, encrypted local filesystem, S3 Compatible Object Storage, Google Cloud Storage, Azure Blob Storage or other SFTP accounts over SFTP/SCP/FTP/WebDAV.
 - Per user protocols restrictions. You can configure the allowed protocols (SSH/FTP/WebDAV) for each user.
 - [Prometheus metrics](./docs/metrics.md) are exposed.
 - Support for HAProxy PROXY protocol: you can proxy and/or load balance the SFTP/SCP/FTP/WebDAV service without losing the information about the client's address.
 - [REST API](./docs/rest-api.md) for users and folders management, backup, restore and real time reports of the active connections with possibility of forcibly closing a connection.
 - [Web based administration interface](./docs/web-admin.md) to easily manage users, folders and connections.
-- Easy [migration](./examples/rest-api-cli#convert-users-from-other-stores) from Linux system user accounts.
+- Easy [migration](./examples/convertusers) from Linux system user accounts.
 - [Portable mode](./docs/portable-mode.md): a convenient way to share a single directory on demand.
 - [SFTP subsystem mode](./docs/sftp-subsystem.md): you can use SFTPGo as OpenSSH's SFTP subsystem.
 - Performance analysis using built-in [profiler](./docs/profiling.md).
@@ -57,7 +59,7 @@ SFTPGo is developed and tested on Linux. After each commit, the code is automati
 
 ## Requirements
 
-- Go 1.14 or higher as build only dependency.
+- Go 1.15 or higher as build only dependency.
 - A suitable SQL server to use as data provider: PostgreSQL 9.4+ or MySQL 5.6+ or SQLite 3.x.
 - The SQL server is optional: you can choose to use an embedded bolt database as key/value store or an in memory data provider.
 
@@ -145,7 +147,6 @@ After starting SFTPGo you can manage users and folders using:
 
 - the [web based administration interface](./docs/web-admin.md)
 - the [REST API](./docs/rest-api.md)
-- the sample [REST API CLI](./examples/rest-api-cli)
 
 To support embedded data providers like `bolt` and `SQLite` we can't have a CLI that directly write users and folders to the data provider, we always have to use the REST API.
 
@@ -221,6 +222,8 @@ Anyway, some backends require a pay per use account (or they offer free account 
 ## Brute force protection
 
 The [connection failed logs](./docs/logs.md) can be used for integration in tools such as [Fail2ban](http://www.fail2ban.org/). Example of [jails](./fail2ban/jails) and [filters](./fail2ban/filters) working with `systemd`/`journald` are available in fail2ban directory.
+
+You can also use the built-in [defender](./docs/defender.md).
 
 ## Account's configuration properties
 
